@@ -1,0 +1,8 @@
+# test log
+getenv HTTP_PROXY
+getenv HTTPS_PROXY
+getenv ALL_PROXY
+getenv DINGTALK_PROXY_URL
+getenv DINGTALK_PROXY_URL
+getenv DINGTALK_PROXY_URL
+getenv DINGTALK_PROXY_URL

@@ -1,0 +1,544 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "打卡服务 API",
+    "version": "1.3.0",
+    "description": "checkin-server 接口文档。token 采用 JWT (HS256),有效期 72 小时,需通过环境变量 JWT_SECRET (>=32 字符) 配置密钥。"
+  },
+  "servers": [
+    {
+      "url": "{{baseUrl}}",
+      "description": "由 Apifox 环境变量 baseUrl 提供实际请求地址"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "ApiResult": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "description": "0 表示业务成功,其他为错误码(常与 HTTP 状态码对齐)" },
+          "msg": { "type": "string" },
+          "data": { "type": "object", "nullable": true }
+        },
+        "required": ["code", "msg"]
+      },
+      "DistanceData": {
+        "type": "object",
+        "properties": {
+          "distanceMeters": { "type": "number", "format": "double", "description": "本次打卡位置到签到点的直线距离(米)" },
+          "maxDistanceMeters": { "type": "number", "format": "double", "description": "允许的最大距离(米),当前为 200" },
+          "dingtalkSync": { "type": "string", "description": "钉钉同步状态: disabled/pending/skipped_missing_mapping/skipped_user_lookup_failed/queue_failed" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/register": {
+      "post": {
+        "summary": "用户注册",
+        "description": "创建启用状态的用户并签发 JWT。账号、密码、部门均为必填项，请求体不允许未知字段。",
+        "tags": ["用户"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["userName", "password", "department"],
+                "properties": {
+                  "userName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "账号" },
+                  "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "密码" },
+                  "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
+                  "mobile": { "type": "string", "maxLength": 32, "description": "员工手机号,用于后续自动查询钉钉 userid" },
+                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "注册成功，同时返回 JWT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiResult" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": { "type": "integer", "example": 0 },
+                        "msg": { "type": "string", "example": "注册成功" },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "token": { "type": "string" },
+                            "userId": { "type": "integer", "format": "int64" },
+                            "userName": { "type": "string" },
+                            "department": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体格式错误或字段校验失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "invalidJson": { "value": { "code": 400, "msg": "请求体格式错误或包含未知字段" } },
+                  "invalidFields": { "value": { "code": 1, "msg": "用户名、密码或部门格式错误" } }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "账号已存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 409, "msg": "用户名已存在" }
+              }
+            }
+          },
+          "500": {
+            "description": "注册或签发 token 失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "注册失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/login": {
+      "post": {
+        "summary": "用户登录",
+        "description": "按 userName 查询用户,校验密码与状态后签发 JWT。请求体不允许未知字段。",
+        "tags": ["用户"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["userName", "password"],
+                "properties": {
+                  "userName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "用户名" },
+                  "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "明文密码(后端按 hash 比对)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiResult" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": { "type": "integer", "example": 0 },
+                        "msg": { "type": "string", "example": "登录成功" },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "token": { "type": "string", "description": "JWT,后续接口作为 Bearer 凭据" },
+                            "userId": { "type": "integer", "format": "int64" },
+                            "userName": { "type": "string" },
+                            "department": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体格式错误或包含未知字段 / 用户名或密码格式错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "badJson": { "value": { "code": 400, "msg": "请求体格式错误或包含未知字段" } },
+                  "invalidField": { "value": { "code": 1, "msg": "用户名或密码格式错误" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "用户名或密码错误 / 用户已禁用",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 401, "msg": "用户名或密码错误" }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 POST)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败 / 签发 token 失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "签发token失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/register": {
+      "post": {
+        "summary": "用户注册",
+        "description": "按 userName 创建新用户,密码经 PBKDF2-SHA256 哈希后存入 user 表。注册成功后直接签发 JWT(免再登录)。请求体不允许未知字段。",
+        "tags": ["用户"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["userName", "password", "department"],
+                "properties": {
+                  "userName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "用户名" },
+                  "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "明文密码(后端按 PBKDF2-SHA256 60 万轮哈希存储)" },
+                  "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
+                  "mobile": { "type": "string", "maxLength": 32, "description": "员工手机号,用于后续自动查询钉钉 userid" },
+                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "注册成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiResult" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": { "type": "integer", "example": 0 },
+                        "msg": { "type": "string", "example": "注册成功" },
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "token": { "type": "string", "description": "JWT,可直接用于后续接口" },
+                            "userId": { "type": "integer", "format": "int64" },
+                            "userName": { "type": "string" },
+                            "department": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体格式错误或包含未知字段 / 用户名、密码或部门格式错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "badJson": { "value": { "code": 400, "msg": "请求体格式错误或包含未知字段" } },
+                  "invalidField": { "value": { "code": 1, "msg": "用户名、密码或部门格式错误" } }
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 POST)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "409": {
+            "description": "用户名已存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 409, "msg": "用户名已存在" }
+              }
+            }
+          },
+          "500": {
+            "description": "注册失败 / 签发 token 失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "注册失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkin": {
+      "post": {
+        "summary": "打卡",
+        "description": "校验 JWT 后,根据 pointId 查询签到点坐标与状态,计算用户当前位置到签到点的直线距离。距离 <= 200 米且签到点可用时打卡成功。请求体不允许未知字段。",
+        "tags": ["打卡"],
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["pointId", "longitude", "latitude"],
+                "properties": {
+                  "pointId": { "type": "string", "minLength": 1, "maxLength": 64, "description": "签到点 ID" },
+                  "longitude": { "type": "number", "format": "double", "minimum": -180, "maximum": 180 },
+                  "latitude": { "type": "number", "format": "double", "minimum": -90, "maximum": 90 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "打卡成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiResult" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": { "type": "integer", "example": 0 },
+                        "msg": { "type": "string", "example": "打卡成功" },
+                        "data": { "$ref": "#/components/schemas/DistanceData" }
+                      }
+                    }
+                  ]
+                },
+                "example": {
+                  "code": 0,
+                  "msg": "打卡成功",
+                  "data": { "distanceMeters": 35.42, "maxDistanceMeters": 200, "dingtalkSync": "pending" }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体格式错误或包含未知字段 / 签到点或位置坐标无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "badJson": { "value": { "code": 400, "msg": "请求体格式错误或包含未知字段" } },
+                  "invalidField": { "value": { "code": 1, "msg": "签到点或位置坐标无效" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / token 无效或过期",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 401, "msg": "未登录" }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 POST)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "403": {
+            "description": "当前位置不在签到范围内",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/ApiResult" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/DistanceData" } } }
+                  ]
+                },
+                "example": {
+                  "code": 403,
+                  "msg": "当前位置不在签到范围内",
+                  "data": { "distanceMeters": 532.11, "maxDistanceMeters": 200 }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "签到点不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 404, "msg": "签到点不存在" }
+              }
+            }
+          },
+          "409": {
+            "description": "签到点不可用",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 409, "msg": "签到点不可用" }
+              }
+            }
+          },
+          "500": {
+            "description": "打卡失败 / 查询签到点失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "打卡失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkins/me": {
+      "get": {
+        "summary": "获取当前用户签到记录",
+        "description": "根据 JWT 中的用户 ID 返回当前登录用户自己的签到记录，不接受 userId 查询参数。默认第 1 页、每页 20 条，pageSize 最大 100。",
+        "tags": ["打卡"],
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "default": 1 },
+            "description": "页码"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+            "description": "每页数量"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": {
+                  "code": 0,
+                  "msg": "查询成功",
+                  "data": {
+                    "items": [
+                      {
+                        "id": 20,
+                        "pointId": "point-001",
+                        "longitude": 113.9475,
+                        "latitude": 35.2952778,
+                        "distanceMeters": 12.34,
+                        "createdAt": "2026-09-29 10:30:00"
+                      }
+                    ],
+                    "page": 1,
+                    "pageSize": 20,
+                    "total": 1
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "分页参数无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 400, "msg": "pageSize must be between 1 and 100" }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或 token 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 401, "msg": "未登录" }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 GET)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "500": {
+            "description": "查询签到记录失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "查询签到记录失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "导出本 OpenAPI 文档",
+        "description": "返回当前服务自描述的 OpenAPI 3.0 文档,可直接作为 Apifox 等工具的导入 URL。",
+        "tags": ["元数据"],
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.0 JSON 文档",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
