@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	dingTalkUploadURL       = "https://oapi.dingtalk.com/topapi/attendance/record/upload"
-	dingTalkTokenURL        = "https://oapi.dingtalk.com/gettoken"
-	dingTalkUserByMobileURL = "https://oapi.dingtalk.com/topapi/v2/user/getbymobile"
-	dingTalkUserListURL     = "https://oapi.dingtalk.com/topapi/v2/user/list"
-	dingTalkMaxHistory      = 180 * 24 * time.Hour
-	dingTalkDefaultDeviceID = "checkin-server-001"
-	dingTalkDefaultDevice   = "外部系统同步"
+	dingTalkUploadURL         = "https://oapi.dingtalk.com/topapi/attendance/record/upload"
+	dingTalkTokenURL          = "https://oapi.dingtalk.com/gettoken"
+	dingTalkUserByMobileURL   = "https://oapi.dingtalk.com/topapi/v2/user/getbymobile"
+	dingTalkUserListURL       = "https://oapi.dingtalk.com/topapi/v2/user/list"
+	dingTalkDepartmentListURL = "https://oapi.dingtalk.com/topapi/v2/department/listsub"
+	dingTalkUserDetailURL     = "https://oapi.dingtalk.com/topapi/v2/user/get"
+	dingTalkMaxHistory        = 180 * 24 * time.Hour
+	dingTalkDefaultDeviceID   = "checkin-server-001"
+	dingTalkDefaultDevice     = "外部系统同步"
 )
 
 var errDingTalkUserNotMapped = errors.New("dingtalk user id is not mapped")
@@ -40,21 +42,23 @@ type DingTalkUploadResult struct {
 }
 
 type DingTalkClient struct {
-	clientID           string
-	clientSecret       string
-	accessToken        string
-	staticAccessToken  bool
-	accessTokenExpires time.Time
-	tokenEndpoint      string
-	endpoint           string
-	userEndpoint       string
-	userListEndpoint   string
-	rootDeptID         int64
-	deviceName         string
-	deviceID           string
-	format             string
-	httpClient         *http.Client
-	tokenMu            sync.Mutex
+	clientID               string
+	clientSecret           string
+	accessToken            string
+	staticAccessToken      bool
+	accessTokenExpires     time.Time
+	tokenEndpoint          string
+	endpoint               string
+	userEndpoint           string
+	userListEndpoint       string
+	departmentListEndpoint string
+	userDetailEndpoint     string
+	rootDeptID             int64
+	deviceName             string
+	deviceID               string
+	format                 string
+	httpClient             *http.Client
+	tokenMu                sync.Mutex
 }
 
 type dingTalkUploadPayload struct {
@@ -80,6 +84,17 @@ type dingTalkUserByMobileResponse struct {
 	} `json:"result"`
 }
 
+type dingTalkUserDetailResponse struct {
+	ErrCode int    `json:"errcode"`
+	ErrMsg  string `json:"errmsg"`
+	Result  struct {
+		UserID        string  `json:"userid"`
+		Name          string  `json:"name"`
+		Mobile        string  `json:"mobile"`
+		DepartmentIDs []int64 `json:"dept_id_list"`
+	} `json:"result"`
+}
+
 type dingTalkUserListRequest struct {
 	DeptID   int64  `json:"dept_id"`
 	Cursor   int64  `json:"cursor"`
@@ -94,10 +109,18 @@ type dingTalkUserListResponse struct {
 		HasMore    bool  `json:"has_more"`
 		NextCursor int64 `json:"next_cursor"`
 		List       []struct {
-			UserID string `json:"userid"`
-			Mobile string `json:"mobile"`
+			UserID        string  `json:"userid"`
+			Name          string  `json:"name"`
+			Mobile        string  `json:"mobile"`
+			DepartmentIDs []int64 `json:"dept_id_list"`
 		} `json:"list"`
 	} `json:"result"`
+}
+
+type dingTalkDepartmentListResponse struct {
+	ErrCode int             `json:"errcode"`
+	ErrMsg  string          `json:"errmsg"`
+	Result  json.RawMessage `json:"result"`
 }
 
 type dingTalkTokenResponse struct {
@@ -139,19 +162,21 @@ func newDingTalkClientFromEnv() *DingTalkClient {
 		httpClient = directDingTalkHTTPClient()
 	}
 	return &DingTalkClient{
-		clientID:          clientID,
-		clientSecret:      clientSecret,
-		accessToken:       accessToken,
-		staticAccessToken: accessToken != "",
-		tokenEndpoint:     envOrDefault("DINGTALK_TOKEN_URL", dingTalkTokenURL),
-		endpoint:          endpoint,
-		userEndpoint:      envOrDefault("DINGTALK_USER_BY_MOBILE_URL", dingTalkUserByMobileURL),
-		userListEndpoint:  envOrDefault("DINGTALK_USER_LIST_URL", dingTalkUserListURL),
-		rootDeptID:        rootDeptID,
-		deviceName:        envOrDefault("DINGTALK_DEVICE_NAME", dingTalkDefaultDevice),
-		deviceID:          envOrDefault("DINGTALK_DEVICE_ID", dingTalkDefaultDeviceID),
-		format:            format,
-		httpClient:        httpClient,
+		clientID:               clientID,
+		clientSecret:           clientSecret,
+		accessToken:            accessToken,
+		staticAccessToken:      accessToken != "",
+		tokenEndpoint:          envOrDefault("DINGTALK_TOKEN_URL", dingTalkTokenURL),
+		endpoint:               endpoint,
+		userEndpoint:           envOrDefault("DINGTALK_USER_BY_MOBILE_URL", dingTalkUserByMobileURL),
+		userListEndpoint:       envOrDefault("DINGTALK_USER_LIST_URL", dingTalkUserListURL),
+		departmentListEndpoint: envOrDefault("DINGTALK_DEPARTMENT_LIST_URL", dingTalkDepartmentListURL),
+		userDetailEndpoint:     envOrDefault("DINGTALK_USER_DETAIL_URL", dingTalkUserDetailURL),
+		rootDeptID:             rootDeptID,
+		deviceName:             envOrDefault("DINGTALK_DEVICE_NAME", dingTalkDefaultDevice),
+		deviceID:               envOrDefault("DINGTALK_DEVICE_ID", dingTalkDefaultDeviceID),
+		format:                 format,
+		httpClient:             httpClient,
 	}
 }
 
@@ -399,15 +424,81 @@ func (c *DingTalkClient) ResolveUserIDByMobile(ctx context.Context, mobile strin
 	return strings.TrimSpace(result.Result.UserID), nil
 }
 
+func (c *DingTalkClient) GetUserDetails(ctx context.Context, userID string) (dingTalkDirectoryUser, error) {
+	if c == nil {
+		return dingTalkDirectoryUser{}, errors.New("dingtalk client is nil")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return dingTalkDirectoryUser{}, errDingTalkUserNotMapped
+	}
+	accessToken, err := c.getAccessToken(ctx)
+	if err != nil {
+		return dingTalkDirectoryUser{}, err
+	}
+	endpointURL := c.userDetailEndpoint
+	if strings.TrimSpace(endpointURL) == "" {
+		endpointURL = dingTalkUserDetailURL
+	}
+	endpoint, err := url.Parse(endpointURL)
+	if err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("parse dingtalk user detail endpoint: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("access_token", accessToken)
+	endpoint.RawQuery = query.Encode()
+	body, err := json.Marshal(map[string]string{"userid": userID})
+	if err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("encode dingtalk user detail request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("create dingtalk user detail request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	response, err := httpClient.Do(req)
+	if err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("call dingtalk user detail: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("read dingtalk user detail response: %w", err)
+	}
+	var result dingTalkUserDetailResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return dingTalkDirectoryUser{}, fmt.Errorf("decode dingtalk user detail response: %w", err)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || result.ErrCode != 0 {
+		return dingTalkDirectoryUser{}, fmt.Errorf("dingtalk user detail failed (%d): %s", result.ErrCode, result.ErrMsg)
+	}
+	return dingTalkDirectoryUser{
+		UserID:        strings.TrimSpace(result.Result.UserID),
+		Name:          strings.TrimSpace(result.Result.Name),
+		Mobile:        strings.TrimSpace(result.Result.Mobile),
+		DepartmentIDs: append([]int64(nil), result.Result.DepartmentIDs...),
+	}, nil
+}
+
 type dingTalkDirectoryUser struct {
-	UserID string
-	Mobile string
+	UserID        string
+	Name          string
+	Mobile        string
+	DepartmentIDs []int64
 }
 
 // ListUsers returns active users from the configured root department. The
 // endpoint is paginated so large organizations do not require one request per
 // local user.
 func (c *DingTalkClient) ListUsers(ctx context.Context) ([]dingTalkDirectoryUser, error) {
+	return c.listUsersInDepartment(ctx, c.rootDeptID)
+}
+
+func (c *DingTalkClient) listUsersInDepartment(ctx context.Context, deptID int64) ([]dingTalkDirectoryUser, error) {
 	if c == nil {
 		return nil, errors.New("dingtalk client is nil")
 	}
@@ -427,7 +518,6 @@ func (c *DingTalkClient) ListUsers(ctx context.Context) ([]dingTalkDirectoryUser
 	query.Set("access_token", accessToken)
 	endpoint.RawQuery = query.Encode()
 
-	deptID := c.rootDeptID
 	if deptID <= 0 {
 		deptID = 1
 	}
@@ -469,12 +559,14 @@ func (c *DingTalkClient) ListUsers(ctx context.Context) ([]dingTalkDirectoryUser
 			return nil, fmt.Errorf("dingtalk user list failed (%d): %s", result.ErrCode, result.ErrMsg)
 		}
 		for _, item := range result.Result.List {
-			if strings.TrimSpace(item.UserID) == "" || strings.TrimSpace(item.Mobile) == "" {
+			if strings.TrimSpace(item.UserID) == "" {
 				continue
 			}
 			users = append(users, dingTalkDirectoryUser{
-				UserID: strings.TrimSpace(item.UserID),
-				Mobile: strings.TrimSpace(item.Mobile),
+				UserID:        strings.TrimSpace(item.UserID),
+				Name:          strings.TrimSpace(item.Name),
+				Mobile:        strings.TrimSpace(item.Mobile),
+				DepartmentIDs: append([]int64(nil), item.DepartmentIDs...),
 			})
 		}
 		if !result.Result.HasMore {
@@ -486,6 +578,148 @@ func (c *DingTalkClient) ListUsers(ctx context.Context) ([]dingTalkDirectoryUser
 		cursor = result.Result.NextCursor
 	}
 	return nil, errors.New("dingtalk user list exceeded pagination limit")
+}
+
+func (c *DingTalkClient) ListDepartmentIDs(ctx context.Context) ([]int64, error) {
+	if c == nil {
+		return nil, errors.New("dingtalk client is nil")
+	}
+	accessToken, err := c.getAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	endpointURL := c.departmentListEndpoint
+	if strings.TrimSpace(endpointURL) == "" {
+		endpointURL = dingTalkDepartmentListURL
+	}
+	endpoint, err := url.Parse(endpointURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse dingtalk department endpoint: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("access_token", accessToken)
+	endpoint.RawQuery = query.Encode()
+	rootID := c.rootDeptID
+	if rootID <= 0 {
+		rootID = 1
+	}
+	queue := []int64{rootID}
+	seen := map[int64]bool{rootID: true}
+	departmentIDs := make([]int64, 0, 16)
+	for len(queue) > 0 {
+		deptID := queue[0]
+		queue = queue[1:]
+		departmentIDs = append(departmentIDs, deptID)
+		body, err := json.Marshal(map[string]int64{"dept_id": deptID})
+		if err != nil {
+			return nil, fmt.Errorf("encode dingtalk department request: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
+		if err != nil {
+			return nil, fmt.Errorf("create dingtalk department request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		httpClient := c.httpClient
+		if httpClient == nil {
+			httpClient = http.DefaultClient
+		}
+		response, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("call dingtalk department list: %w", err)
+		}
+		responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read dingtalk department response: %w", readErr)
+		}
+		var result dingTalkDepartmentListResponse
+		if err := json.Unmarshal(responseBody, &result); err != nil {
+			return nil, fmt.Errorf("decode dingtalk department response: %w", err)
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || result.ErrCode != 0 {
+			return nil, fmt.Errorf("dingtalk department list failed (%d): %s", result.ErrCode, result.ErrMsg)
+		}
+		childIDs, decodeErr := decodeDingTalkDepartmentIDs(result.Result)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		for _, childID := range childIDs {
+			if childID > 0 && !seen[childID] {
+				seen[childID] = true
+				queue = append(queue, childID)
+			}
+		}
+		if len(departmentIDs) > 10000 {
+			return nil, errors.New("dingtalk department list exceeded safety limit")
+		}
+	}
+	return departmentIDs, nil
+}
+
+func decodeDingTalkDepartmentIDs(raw json.RawMessage) ([]int64, error) {
+	var direct []struct {
+		DeptID int64 `json:"dept_id"`
+	}
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		ids := make([]int64, 0, len(direct))
+		for _, item := range direct {
+			ids = append(ids, item.DeptID)
+		}
+		return ids, nil
+	}
+	var wrapped struct {
+		Dept []struct {
+			DeptID int64 `json:"dept_id"`
+		} `json:"dept"`
+		Departments []struct {
+			DeptID int64 `json:"dept_id"`
+		} `json:"departments"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, fmt.Errorf("decode dingtalk department result: %w", err)
+	}
+	ids := make([]int64, 0, len(wrapped.Dept)+len(wrapped.Departments))
+	for _, item := range wrapped.Dept {
+		ids = append(ids, item.DeptID)
+	}
+	for _, item := range wrapped.Departments {
+		ids = append(ids, item.DeptID)
+	}
+	return ids, nil
+}
+
+// ListUsersAllDepartments traverses the department tree and de-duplicates
+// users who belong to multiple departments.
+func (c *DingTalkClient) ListUsersAllDepartments(ctx context.Context) ([]dingTalkDirectoryUser, error) {
+	departmentIDs, err := c.ListDepartmentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usersByID := make(map[string]dingTalkDirectoryUser)
+	for _, departmentID := range departmentIDs {
+		users, err := c.listUsersInDepartment(ctx, departmentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			if existing, ok := usersByID[user.UserID]; ok {
+				if existing.Mobile == "" {
+					existing.Mobile = user.Mobile
+				}
+				if existing.Name == "" {
+					existing.Name = user.Name
+				}
+				usersByID[user.UserID] = existing
+				continue
+			}
+			usersByID[user.UserID] = user
+		}
+	}
+	users := make([]dingTalkDirectoryUser, 0, len(usersByID))
+	for _, user := range usersByID {
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 // syncDingTalkUserMappings resolves all local mobile numbers in one paginated
@@ -517,7 +751,7 @@ func syncDingTalkUserMappings(ctx context.Context, client *DingTalkClient) (int6
 	if len(localUsers) == 0 {
 		return 0, nil
 	}
-	directoryUsers, err := client.ListUsers(ctx)
+	directoryUsers, err := client.ListUsersAllDepartments(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -540,6 +774,118 @@ func syncDingTalkUserMappings(ctx context.Context, client *DingTalkClient) (int6
 		updated += affected
 	}
 	return updated, nil
+}
+
+const importedDingTalkPasswordHash = "!dingtalk-imported-account-password-not-set"
+
+type dingTalkImportStats struct {
+	Fetched  int64
+	Inserted int64
+	Updated  int64
+	Skipped  int64
+}
+
+// importDingTalkUsers imports the company directory into the local user table.
+// Existing passwords are never changed; newly imported accounts receive an
+// unusable placeholder password until an administrator sets one locally.
+func importDingTalkUsers(ctx context.Context, client *DingTalkClient) (dingTalkImportStats, error) {
+	var stats dingTalkImportStats
+	if client == nil || db == nil {
+		return stats, errors.New("dingtalk client or database is not configured")
+	}
+	users, err := client.ListUsersAllDepartments(ctx)
+	if err != nil {
+		return stats, err
+	}
+	for index := range users {
+		if users[index].Mobile != "" {
+			continue
+		}
+		details, detailErr := client.GetUserDetails(ctx, users[index].UserID)
+		if detailErr != nil {
+			return stats, detailErr
+		}
+		if details.Name != "" {
+			users[index].Name = details.Name
+		}
+		users[index].Mobile = details.Mobile
+		if len(details.DepartmentIDs) > 0 {
+			users[index].DepartmentIDs = details.DepartmentIDs
+		}
+	}
+	for _, directoryUser := range users {
+		stats.Fetched++
+		name := strings.TrimSpace(directoryUser.Name)
+		if name == "" {
+			name = directoryUser.UserID
+		}
+		mobile := strings.TrimSpace(directoryUser.Mobile)
+		department := formatDingTalkDepartment(directoryUser.DepartmentIDs)
+
+		var localID int64
+		findErr := db.QueryRowContext(ctx,
+			"SELECT id FROM user WHERE dingtalk_userid=? LIMIT 1", directoryUser.UserID).Scan(&localID)
+		if findErr == sql.ErrNoRows && mobile != "" {
+			findErr = db.QueryRowContext(ctx,
+				"SELECT id FROM user WHERE mobile=? LIMIT 1", mobile).Scan(&localID)
+		}
+		if findErr == sql.ErrNoRows && name != "" {
+			findErr = db.QueryRowContext(ctx,
+				"SELECT id FROM user WHERE name=? LIMIT 1", name).Scan(&localID)
+		}
+		if findErr == nil {
+			result, updateErr := db.ExecContext(ctx, `
+				UPDATE user
+				SET dingtalk_userid=?,
+				    mobile=CASE WHEN ?<>'' THEN ? ELSE mobile END,
+				    department=CASE WHEN (department IS NULL OR department='') THEN ? ELSE department END
+				WHERE id=?`, directoryUser.UserID, mobile, mobile, department, localID)
+			if updateErr != nil {
+				if isDuplicateUserError(updateErr) {
+					stats.Skipped++
+					continue
+				}
+				return stats, fmt.Errorf("update imported user %s: %w", directoryUser.UserID, updateErr)
+			}
+			affected, rowsErr := result.RowsAffected()
+			if rowsErr != nil {
+				return stats, rowsErr
+			}
+			stats.Updated += affected
+			continue
+		}
+		if findErr != sql.ErrNoRows {
+			return stats, fmt.Errorf("find local user for %s: %w", directoryUser.UserID, findErr)
+		}
+
+		_, insertErr := db.ExecContext(ctx, `
+			INSERT INTO user(name, department, password_hash, mobile, dingtalk_userid, status)
+			VALUES(?,?,?,?,?,1)`, name, department, importedDingTalkPasswordHash, nullableString(mobile), directoryUser.UserID)
+		if insertErr != nil {
+			if isDuplicateUserError(insertErr) {
+				stats.Skipped++
+				continue
+			}
+			return stats, fmt.Errorf("insert imported user %s: %w", directoryUser.UserID, insertErr)
+		}
+		stats.Inserted++
+	}
+	return stats, nil
+}
+
+func formatDingTalkDepartment(ids []int64) string {
+	if len(ids) == 0 {
+		return "钉钉通讯录"
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	department := "钉钉部门:" + strings.Join(parts, ",")
+	if len(department) > 64 {
+		return department[:64]
+	}
+	return department
 }
 
 func (c *DingTalkClient) encodePayload(payload dingTalkUploadPayload) (string, string, error) {

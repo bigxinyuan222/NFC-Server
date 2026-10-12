@@ -66,7 +66,7 @@ func (c *fakeLoginConn) QueryContext(_ context.Context, query string, _ []driver
 			}, nil
 		}
 		return &fakeLoginRows{
-			columns: []string{"id", "point_id", "longitude", "latitude", "distance_m", "created_at"},
+			columns: []string{"id", "point_id", "created_at"},
 			records: c.state.checkinRows,
 		}, nil
 	}
@@ -77,7 +77,7 @@ func (c *fakeLoginConn) QueryContext(_ context.Context, query string, _ []driver
 	columns := []string{"id", "name", "department", "password_hash", "status"}
 	if strings.Contains(query, "checkin_point") {
 		values = c.state.pointValues
-		columns = []string{"longitude", "latitude", "status"}
+		columns = []string{"status"}
 	}
 	return &fakeLoginRows{
 		columns: columns,
@@ -380,48 +380,7 @@ func TestUserIDFromReqRejectsWrongIssuer(t *testing.T) {
 	}
 }
 
-func TestDistanceMeters(t *testing.T) {
-	if got := distanceMeters(31.2304, 121.4737, 31.2304, 121.4737); got != 0 {
-		t.Fatalf("distanceMeters() for identical points = %f, want 0", got)
-	}
-	// One degree of latitude is about 111 km, which also checks that the
-	// result is returned in meters rather than kilometers or degrees.
-	got := distanceMeters(0, 0, 1, 0)
-	if got < 111000 || got > 112000 {
-		t.Fatalf("distanceMeters() = %f, want approximately 111,000", got)
-	}
-}
-
-func TestCheckinLocationBoundary(t *testing.T) {
-	const latitude = 31.2304
-	const longitude = 121.4737
-	// Move north by approximately 199 m and 201 m respectively.
-	withinLatitude := latitude + (199 / 111320.0)
-	outsideLatitude := latitude + (201 / 111320.0)
-	if distanceMeters(latitude, longitude, withinLatitude, longitude) > maxCheckinDistanceMeters {
-		t.Fatal("a point within 200 meters was rejected by the distance calculation")
-	}
-	if distanceMeters(latitude, longitude, outsideLatitude, longitude) <= maxCheckinDistanceMeters {
-		t.Fatal("a point beyond 200 meters was accepted by the distance calculation")
-	}
-}
-
-func TestValidCoordinates(t *testing.T) {
-	valid := [][2]float64{{0, 0}, {-180, -90}, {180, 90}, {121.4737, 31.2304}}
-	for _, coordinate := range valid {
-		if !validCoordinates(coordinate[0], coordinate[1]) {
-			t.Fatalf("validCoordinates(%v, %v) = false", coordinate[0], coordinate[1])
-		}
-	}
-	invalid := [][2]float64{{-180.1, 0}, {180.1, 0}, {0, -90.1}, {0, 90.1}}
-	for _, coordinate := range invalid {
-		if validCoordinates(coordinate[0], coordinate[1]) {
-			t.Fatalf("validCoordinates(%v, %v) = true", coordinate[0], coordinate[1])
-		}
-	}
-}
-
-func TestCheckinEnforcesLocationRange(t *testing.T) {
+func TestCheckinCreatesRecordForKnownPoint(t *testing.T) {
 	oldDB, oldSecret := db, jwtSecret
 	t.Cleanup(func() {
 		db = oldDB
@@ -433,37 +392,39 @@ func TestCheckinEnforcesLocationRange(t *testing.T) {
 		t.Fatalf("genToken() error = %v", err)
 	}
 
-	const pointLongitude = 121.4737
-	const pointLatitude = 31.2304
-	const pointID = "office"
+	const (
+		pointID      = "office"
+		whitelistUID = "5317C716430001"
+	)
 	tests := []struct {
 		name       string
-		longitude  float64
-		latitude   float64
 		point      []driver.Value
+		uid        string
 		wantStatus int
 		wantWrites int
 	}{
 		{
-			name:       "inside 200 meters is accepted",
-			longitude:  pointLongitude,
-			latitude:   pointLatitude,
-			point:      []driver.Value{pointLongitude, pointLatitude, true},
+			name:       "known available point with whitelisted uid is accepted",
+			point:      []driver.Value{true},
+			uid:        whitelistUID,
 			wantStatus: http.StatusOK,
 			wantWrites: 1,
 		},
 		{
-			name:       "outside 200 meters is rejected",
-			longitude:  pointLongitude,
-			latitude:   pointLatitude + (201 / 111320.0),
-			point:      []driver.Value{pointLongitude, pointLatitude, true},
+			name:       "unknown point with whitelisted uid is rejected",
+			uid:        whitelistUID,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "card uid not in whitelist is rejected",
+			point:      []driver.Value{true},
+			uid:        "5399C716430099",
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "unknown point is rejected",
-			longitude:  pointLongitude,
-			latitude:   pointLatitude,
-			wantStatus: http.StatusNotFound,
+			name:       "empty uid is rejected",
+			point:      []driver.Value{true},
+			wantStatus: http.StatusForbidden,
 		},
 	}
 
@@ -471,7 +432,7 @@ func TestCheckinEnforcesLocationRange(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := &fakeLoginState{pointValues: tt.point}
 			db = newFakeDB(t, state)
-			body := `{"pointId":"` + pointID + `","longitude":` + strconv.FormatFloat(tt.longitude, 'f', 7, 64) + `,"latitude":` + strconv.FormatFloat(tt.latitude, 'f', 7, 64) + `}`
+			body := `{"pointId":"` + pointID + `","uid":"` + tt.uid + `"}`
 			req := httptest.NewRequest(http.MethodPost, "/api/checkin", strings.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+token)
 			response := httptest.NewRecorder()
@@ -502,8 +463,8 @@ func TestMyCheckinsReturnsOnlyAuthenticatedUserRecords(t *testing.T) {
 	state := &fakeLoginState{
 		checkinCount: 2,
 		checkinRows: [][]driver.Value{
-			{int64(20), "point-001", float64(113.9475), float64(35.2952778), float64(12.34), createdAt},
-			{int64(19), "point-001", float64(113.9476), float64(35.2953), float64(25.67), createdAt.Add(-time.Hour)},
+			{int64(20), "point-001", createdAt},
+			{int64(19), "point-001", createdAt.Add(-time.Hour)},
 		},
 	}
 	db = newFakeDB(t, state)

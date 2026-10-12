@@ -56,6 +56,18 @@ POST https://oapi.dingtalk.com/topapi/v2/user/list
 
 服务从 `DINGTALK_ROOT_DEPT_ID`（默认 `1`）开始按 100 条一页读取成员，用成员手机号匹配本地 `user.mobile`，匹配成功后写入 `user.dingtalk_userid`。批量同步失败只记录日志，不会阻断本地服务启动；没有匹配到的用户仍会在首次签到时按手机号回退查询。
 
+如果需要把钉钉企业通讯录全部导入本地 `user` 表，应用必须开通 `qyapi_get_department_member`（通讯录成员读取）和 `qyapi_get_department_list`（部门列表读取）权限。仅有 `qyapi_get_member_by_mobile` 只能按已知手机号查询单个 UserID，不能获取全体成员。
+
+通讯录列表没有返回手机号时，导入命令会继续调用 `topapi/v2/user/get` 补取详情，这一步还需要 `qyapi_get_member`（成员详情读取）权限。
+
+开通权限后，在服务停止或独立维护窗口执行：
+
+```powershell
+.\checkin-server.exe sync-dingtalk-users
+```
+
+该命令会分页读取通讯录并幂等写入：已有用户补全 `mobile` 和 `dingtalk_userid`，不存在的用户新增到 `user` 表。新导入用户的本地密码是不可登录占位值，需要管理员后续设置密码；已有用户密码不会被覆盖。
+
 已有数据库需要执行迁移：
 
 ```sql
@@ -93,9 +105,9 @@ $env:LISTEN_ADDR = "0.0.0.0:8080"
 一次完整签到的状态流转如下：
 
 1. 客户端 `POST /api/login` 获取 JWT。
-2. 客户端携带 `Authorization: Bearer <JWT>` 调用 `POST /api/checkin`，提交 `pointId`、`longitude`、`latitude`。
-3. 服务端计算当前位置与 `checkin_point` 的距离，超过 200 米直接拒绝。
-4. 距离合格后写入 `checkin_log`，然后根据本地用户的 `dingtalk_userid` 写入 `dingtalk_upload(status=pending)`。
+2. 客户端携带 `Authorization: Bearer <JWT>` 调用 `POST /api/checkin`，提交 `pointId`。
+3. 服务端检查 `pointId` 对应的签到点是否存在且启用。
+4. 签到点有效后写入 `checkin_log`，然后根据本地用户的 `dingtalk_userid` 写入 `dingtalk_upload(status=pending)`。
 5. 后台 worker 每 5 秒上传钉钉考勤流水；成功后将队列更新为 `success` 并保存 `request_id`，失败则按退避策略重试。
 
 签到接口返回 `dingtalkSync: pending` 只表示已入队；验收钉钉同步时应查询 `dingtalk_upload.status`，最终必须为 `success`。

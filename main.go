@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -31,26 +30,30 @@ var (
 
 const jwtIssuer = "checkin-server"
 
-const maxCheckinDistanceMeters = 200.0
-
 type accessClaims struct {
 	UID int64 `json:"uid"`
 	jwt.RegisteredClaims
 }
 
 type checkinReq struct {
-	PointID   string  `json:"pointId"`
-	Longitude float64 `json:"longitude"`
-	Latitude  float64 `json:"latitude"`
+	PointID string `json:"pointId"`
+	UID     string `json:"uid"`
+}
+
+// checkinCardWhitelist 打卡卡片 UID 白名单(前端刷卡读到的卡号,统一大写)
+var checkinCardWhitelist = map[string]bool{
+	"5317C716430001": true,
+	"5318C716430001": true,
+	"5319C716430001": true,
+	"530EC716430001": true,
+	"530FC716430001": true,
+	"5310C716430001": true,
 }
 
 type checkinRecord struct {
-	ID             int64   `json:"id"`
-	PointID        string  `json:"pointId"`
-	Longitude      float64 `json:"longitude"`
-	Latitude       float64 `json:"latitude"`
-	DistanceMeters float64 `json:"distanceMeters"`
-	CreatedAt      string  `json:"createdAt"`
+	ID        int64  `json:"id"`
+	PointID   string `json:"pointId"`
+	CreatedAt string `json:"createdAt"`
 }
 
 const checkinTimeFormat = "2006-01-02 15:04:05"
@@ -66,28 +69,6 @@ type registerReq struct {
 	Department     string `json:"department"`
 	Mobile         string `json:"mobile"`
 	DingTalkUserID string `json:"dingTalkUserId"`
-}
-
-func validCoordinates(longitude, latitude float64) bool {
-	return !math.IsNaN(longitude) && !math.IsInf(longitude, 0) &&
-		!math.IsNaN(latitude) && !math.IsInf(latitude, 0) &&
-		longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90
-}
-
-// distanceMeters calculates the great-circle distance between two GPS points.
-func distanceMeters(latitude1, longitude1, latitude2, longitude2 float64) float64 {
-	const earthRadiusMeters = 6371000.0
-	const degreesToRadians = math.Pi / 180
-
-	deltaLatitude := (latitude2 - latitude1) * degreesToRadians
-	deltaLongitude := (longitude2 - longitude1) * degreesToRadians
-	latitude1Radians := latitude1 * degreesToRadians
-	latitude2Radians := latitude2 * degreesToRadians
-	a := math.Sin(deltaLatitude/2)*math.Sin(deltaLatitude/2) +
-		math.Cos(latitude1Radians)*math.Cos(latitude2Radians)*
-			math.Sin(deltaLongitude/2)*math.Sin(deltaLongitude/2)
-	a = math.Min(1, math.Max(0, a))
-	return 2 * earthRadiusMeters * math.Asin(math.Sqrt(a))
 }
 
 func genToken(uid int64) (string, error) {
@@ -255,14 +236,18 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.PointID = strings.TrimSpace(req.PointID)
-	if req.PointID == "" || len(req.PointID) > 64 || !validCoordinates(req.Longitude, req.Latitude) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "签到点或位置坐标无效"})
+	req.UID = strings.ToUpper(strings.TrimSpace(req.UID))
+	if !checkinCardWhitelist[req.UID] {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": 403, "msg": "未授权的卡片"})
 		return
 	}
-	var pointLongitude, pointLatitude float64
+	if req.PointID == "" || len(req.PointID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "签到点无效"})
+		return
+	}
 	var pointStatus bool
-	err := db.QueryRowContext(r.Context(), "SELECT longitude, latitude, status FROM checkin_point WHERE id=?", req.PointID).
-		Scan(&pointLongitude, &pointLatitude, &pointStatus)
+	err := db.QueryRowContext(r.Context(), "SELECT status FROM checkin_point WHERE id=?", req.PointID).
+		Scan(&pointStatus)
 	if err == sql.ErrNoRows {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "msg": "签到点不存在"})
 		return
@@ -272,22 +257,13 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "查询签到点失败"})
 		return
 	}
-	if !pointStatus || !validCoordinates(pointLongitude, pointLatitude) {
+	if !pointStatus {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": 409, "msg": "签到点不可用"})
 		return
 	}
-	distance := distanceMeters(req.Latitude, req.Longitude, pointLatitude, pointLongitude)
-	if distance > maxCheckinDistanceMeters {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"code": 403,
-			"msg":  "当前位置不在签到范围内",
-			"data": map[string]any{"distanceMeters": math.Round(distance*100) / 100, "maxDistanceMeters": maxCheckinDistanceMeters},
-		})
-		return
-	}
 	checkTime := time.Now()
-	result, err := db.ExecContext(r.Context(), "INSERT INTO checkin_log(user_id, point_id, longitude, latitude, distance_m, created_at) VALUES(?,?,?,?,?,?)",
-		uid, req.PointID, req.Longitude, req.Latitude, distance, checkTime)
+	result, err := db.ExecContext(r.Context(), "INSERT INTO checkin_log(user_id, point_id, created_at) VALUES(?,?,?)",
+		uid, req.PointID, checkTime)
 	if err != nil {
 		log.Println("insert failed:", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "打卡失败"})
@@ -308,9 +284,7 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		"code": 0,
 		"msg":  "打卡成功",
 		"data": map[string]any{
-			"distanceMeters":    math.Round(distance*100) / 100,
-			"maxDistanceMeters": maxCheckinDistanceMeters,
-			"dingtalkSync":      dingTalkSync,
+			"dingtalkSync": dingTalkSync,
 		},
 	})
 }
@@ -360,7 +334,7 @@ func myCheckins(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.QueryContext(r.Context(), `
-		SELECT id, point_id, longitude, latitude, distance_m, created_at
+		SELECT id, point_id, created_at
 		FROM checkin_log
 		WHERE user_id=?
 		ORDER BY created_at DESC, id DESC
@@ -376,7 +350,7 @@ func myCheckins(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item checkinRecord
 		var createdAt time.Time
-		if err := rows.Scan(&item.ID, &item.PointID, &item.Longitude, &item.Latitude, &item.DistanceMeters, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.PointID, &createdAt); err != nil {
 			log.Println("scan user checkin failed:", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "读取签到记录失败"})
 			return
@@ -449,6 +423,20 @@ func main() {
 		log.Fatal("ping db failed:", err)
 	}
 	dingTalkUploader = newDingTalkClientFromEnv()
+	if len(os.Args) == 2 && os.Args[1] == "sync-dingtalk-users" {
+		client, ok := dingTalkUploader.(*DingTalkClient)
+		if !ok || client == nil {
+			log.Fatal("DingTalk credentials are required for sync-dingtalk-users")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		stats, syncErr := importDingTalkUsers(ctx, client)
+		if syncErr != nil {
+			log.Fatal("sync DingTalk users failed:", syncErr)
+		}
+		fmt.Printf("DingTalk users synced: fetched=%d inserted=%d updated=%d skipped=%d\n", stats.Fetched, stats.Inserted, stats.Updated, stats.Skipped)
+		return
+	}
 	if dingTalkClient, ok := dingTalkUploader.(*DingTalkClient); ok && strings.EqualFold(envOrDefault("DINGTALK_SYNC_USERS_ON_START", "true"), "true") {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
