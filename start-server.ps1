@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $localCredentialFile = Join-Path $PSScriptRoot 'dingtalk.local.env'
 if (Test-Path -LiteralPath $localCredentialFile -PathType Leaf) {
     foreach ($line in Get-Content -LiteralPath $localCredentialFile) {
-        if ($line -match '^\s*(DINGTALK_CLIENT_ID|DINGTALK_CLIENT_SECRET)\s*=\s*(.*?)\s*$') {
+        if ($line -match '^\s*(DINGTALK_CLIENT_ID|DINGTALK_CLIENT_SECRET|DINGTALK_ATTENDANCE_CHECK_ENABLED)\s*=\s*(.*?)\s*$') {
             $name = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
             if (-not [string]::IsNullOrWhiteSpace($value) -and [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {

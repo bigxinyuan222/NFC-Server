@@ -196,6 +196,71 @@ func TestDingTalkListUsersPaginates(t *testing.T) {
 	}
 }
 
+func TestDingTalkCheckAttendanceStatus(t *testing.T) {
+	checkTime := time.Date(2026, 10, 13, 10, 0, 0, 0, time.Local)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("access_token") != "test-access-token" {
+			t.Errorf("access_token = %q", r.URL.Query().Get("access_token"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		var request dingTalkAttendanceRequest
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.WorkDateFrom != "2026-10-13 00:00:00" || request.WorkDateTo != "2026-10-13 23:59:59" {
+			t.Fatalf("date range = %q - %q", request.WorkDateFrom, request.WorkDateTo)
+		}
+		if len(request.UserIDList) != 1 || request.UserIDList[0] != "ding-user-001" {
+			t.Fatalf("userIdList = %+v", request.UserIDList)
+		}
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok","result":{"record_results":[{"userid":"ding-user-001","time_result":"NotSigned"}]}}`))
+	}))
+	defer server.Close()
+
+	client := &DingTalkClient{
+		accessToken:            "test-access-token",
+		attendanceListEndpoint: server.URL,
+		httpClient:             server.Client(),
+	}
+	status, err := client.CheckAttendanceStatus(context.Background(), "ding-user-001", checkTime)
+	if err != nil {
+		t.Fatalf("CheckAttendanceStatus() error = %v", err)
+	}
+	if status != DingTalkAttendanceMissing {
+		t.Fatalf("status = %q, want %q", status, DingTalkAttendanceMissing)
+	}
+}
+
+func TestDingTalkAttendanceCheckIsOptIn(t *testing.T) {
+	t.Setenv("DINGTALK_CLIENT_ID", "test-client")
+	t.Setenv("DINGTALK_CLIENT_SECRET", "test-secret")
+	t.Setenv("DINGTALK_ACCESS_TOKEN", "")
+	t.Setenv("DINGTALK_ATTENDANCE_CHECK_ENABLED", "")
+	client := newDingTalkClientFromEnv()
+	if client == nil {
+		t.Fatal("newDingTalkClientFromEnv() returned nil")
+	}
+	if client.AttendanceStatusCheckEnabled() {
+		t.Fatal("attendance status check should be disabled by default")
+	}
+
+	t.Setenv("DINGTALK_ATTENDANCE_CHECK_ENABLED", "true")
+	client = newDingTalkClientFromEnv()
+	if !client.AttendanceStatusCheckEnabled() {
+		t.Fatal("attendance status check should be enabled explicitly")
+	}
+}
+
+func TestDecodeDingTalkAttendanceRecordsTreatsEmptyAsNoSchedule(t *testing.T) {
+	status, err := decodeDingTalkAttendanceRecords(json.RawMessage(`{"recordresult":[]}`))
+	if err != nil {
+		t.Fatalf("decode attendance records error = %v", err)
+	}
+	if len(status) != 0 {
+		t.Fatalf("records length = %d, want 0", len(status))
+	}
+}
+
 func TestNewDingTalkHTTPClientDefaultsToDirectConnection(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
