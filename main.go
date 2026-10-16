@@ -30,6 +30,10 @@ var (
 
 const jwtIssuer = "checkin-server"
 
+const defaultMySQLLocation = "UTC"
+
+var checkinLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 type accessClaims struct {
 	UID int64 `json:"uid"`
 	jwt.RegisteredClaims
@@ -69,6 +73,11 @@ type registerReq struct {
 	Department     string `json:"department"`
 	Mobile         string `json:"mobile"`
 	DingTalkUserID string `json:"dingTalkUserId"`
+}
+
+type changePasswordReq struct {
+	OldPassword string `json:"oldPassword"`
+	NewPassword string `json:"newPassword"`
 }
 
 func genToken(uid int64) (string, error) {
@@ -202,6 +211,59 @@ func register(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"code": 0, "msg": "注册成功", "data": map[string]any{"token": tk, "userId": id, "userName": req.UserName, "department": req.Department}})
 }
 
+func changePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": 405, "msg": "方法不允许"})
+		return
+	}
+	uid, ok := userIDFromReq(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "msg": "未登录"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req changePasswordReq
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "请求体格式错误或包含未知字段"})
+		return
+	}
+	req.OldPassword = strings.TrimSpace(req.OldPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
+	if req.OldPassword == "" || req.NewPassword == "" || len(req.NewPassword) > 128 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "旧密码或新密码格式错误"})
+		return
+	}
+	if req.OldPassword == req.NewPassword {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "新密码不能与旧密码相同"})
+		return
+	}
+	var passwordHash string
+	err := db.QueryRowContext(r.Context(), "SELECT password_hash FROM user WHERE id=?", uid).Scan(&passwordHash)
+	if err != nil {
+		log.Println("query user password failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "查询用户失败"})
+		return
+	}
+	if !verifyPassword(passwordHash, req.OldPassword) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "msg": "旧密码错误"})
+		return
+	}
+	newHash, err := hashPassword(req.NewPassword)
+	if err != nil {
+		log.Println("hash new password failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "修改密码失败"})
+		return
+	}
+	if _, err := db.ExecContext(r.Context(), "UPDATE user SET password_hash=? WHERE id=?", newHash, uid); err != nil {
+		log.Println("update password failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "修改密码失败"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "密码修改成功"})
+}
+
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -261,7 +323,7 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": 409, "msg": "签到点不可用"})
 		return
 	}
-	checkTime := time.Now()
+	checkTime := time.Now().In(checkinLocation)
 	result, err := db.ExecContext(r.Context(), "INSERT INTO checkin_log(user_id, point_id, created_at) VALUES(?,?,?)",
 		uid, req.PointID, checkTime)
 	if err != nil {
@@ -355,7 +417,7 @@ func myCheckins(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "读取签到记录失败"})
 			return
 		}
-		item.CreatedAt = createdAt.Format(checkinTimeFormat)
+		item.CreatedAt = createdAt.In(checkinLocation).Format(checkinTimeFormat)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -380,6 +442,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// ensureMySQLLocation makes DATETIME parsing deterministic. MySQL DATETIME has
+// no timezone, so the driver stores and reads instants as UTC; API responses
+// convert them to China Standard Time explicitly.
+func ensureMySQLLocation(dsn string) string {
+	queryStart := strings.IndexByte(dsn, '?')
+	if queryStart < 0 {
+		return dsn + "?loc=" + defaultMySQLLocation
+	}
+	query := dsn[queryStart+1:]
+	parameters := strings.Split(query, "&")
+	for i, parameter := range parameters {
+		key, _, _ := strings.Cut(parameter, "=")
+		if strings.EqualFold(strings.TrimSpace(key), "loc") {
+			parameters[i] = "loc=" + defaultMySQLLocation
+			return dsn[:queryStart+1] + strings.Join(parameters, "&")
+		}
+	}
+	if query == "" {
+		return dsn + "loc=" + defaultMySQLLocation
+	}
+	return dsn + "&loc=" + defaultMySQLLocation
 }
 
 func serveSpec(w http.ResponseWriter, r *http.Request) {
@@ -414,6 +499,7 @@ func main() {
 	if dsn == "" {
 		log.Fatal("DB_DSN is required")
 	}
+	dsn = ensureMySQLLocation(dsn)
 	var err error
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
@@ -454,6 +540,7 @@ func main() {
 	startDingTalkWorker(context.Background(), dingTalkUploader)
 	http.HandleFunc("/api/login", login)
 	http.HandleFunc("/api/register", register)
+	http.HandleFunc("/api/change-password", changePassword)
 	http.HandleFunc("/api/checkin", checkin)
 	http.HandleFunc("/api/checkins/me", myCheckins)
 	http.HandleFunc("/openapi.json", serveSpec)

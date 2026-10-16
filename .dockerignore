@@ -1,0 +1,11 @@
+.git
+.gocache
+.gomodcache
+*.exe
+*.env
+!.env.example
+*_test.go
+Dockerfile
+docker-compose.yml
+README.md
+DINGTALK.md

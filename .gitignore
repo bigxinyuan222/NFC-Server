@@ -1,1 +1,14 @@
+# Go build cache
+.gocache/
+.gocache-test/
+
+# 编译产物
+*.exe
+
+# 本地环境文件
+.env
+# 本地/敏感数据
+user-data.sql
+user-data-utf8.sql
+*.local.env
 dingtalk.local.env

@@ -30,6 +30,7 @@ type fakeLoginState struct {
 	execErr      error
 	execCalls    int
 	insertID     int64
+	passwordHash string
 }
 
 type fakeLoginDriver struct {
@@ -70,6 +71,20 @@ func (c *fakeLoginConn) QueryContext(_ context.Context, query string, _ []driver
 			records: c.state.checkinRows,
 		}, nil
 	}
+	if strings.Contains(query, "SELECT password_hash FROM user") {
+		if c.state.err != nil {
+			return nil, c.state.err
+		}
+		return &fakeLoginRows{
+			columns: []string{"password_hash"},
+			records: func() [][]driver.Value {
+				if c.state.passwordHash == "" {
+					return nil
+				}
+				return [][]driver.Value{{c.state.passwordHash}}
+			}(),
+		}, nil
+	}
 	if c.state.err != nil {
 		return nil, c.state.err
 	}
@@ -90,9 +105,12 @@ func (c *fakeLoginConn) QueryContext(_ context.Context, query string, _ []driver
 	}, nil
 }
 
-func (c *fakeLoginConn) ExecContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Result, error) {
+func (c *fakeLoginConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if c.state.execErr != nil {
 		return nil, c.state.execErr
+	}
+	if strings.Contains(query, "UPDATE user SET password_hash") && len(args) != 2 {
+		return nil, errors.New("sql: expected 2 arguments, got " + strconv.Itoa(len(args)))
 	}
 	c.state.execCalls++
 	insertID := c.state.insertID
@@ -392,39 +410,23 @@ func TestCheckinCreatesRecordForKnownPoint(t *testing.T) {
 		t.Fatalf("genToken() error = %v", err)
 	}
 
-	const (
-		pointID      = "office"
-		whitelistUID = "5317C716430001"
-	)
+	const pointID = "office"
+	const whitelistUID = "5317C716430001"
 	tests := []struct {
 		name       string
 		point      []driver.Value
-		uid        string
 		wantStatus int
 		wantWrites int
 	}{
 		{
-			name:       "known available point with whitelisted uid is accepted",
+			name:       "known available point is accepted",
 			point:      []driver.Value{true},
-			uid:        whitelistUID,
 			wantStatus: http.StatusOK,
 			wantWrites: 1,
 		},
 		{
-			name:       "unknown point with whitelisted uid is rejected",
-			uid:        whitelistUID,
+			name:       "unknown point is rejected",
 			wantStatus: http.StatusNotFound,
-		},
-		{
-			name:       "card uid not in whitelist is rejected",
-			point:      []driver.Value{true},
-			uid:        "5399C716430099",
-			wantStatus: http.StatusForbidden,
-		},
-		{
-			name:       "empty uid is rejected",
-			point:      []driver.Value{true},
-			wantStatus: http.StatusForbidden,
 		},
 	}
 
@@ -432,7 +434,7 @@ func TestCheckinCreatesRecordForKnownPoint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := &fakeLoginState{pointValues: tt.point}
 			db = newFakeDB(t, state)
-			body := `{"pointId":"` + pointID + `","uid":"` + tt.uid + `"}`
+			body := `{"pointId":"` + pointID + `","uid":"` + whitelistUID + `"}`
 			req := httptest.NewRequest(http.MethodPost, "/api/checkin", strings.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+token)
 			response := httptest.NewRecorder()
@@ -494,11 +496,30 @@ func TestMyCheckinsReturnsOnlyAuthenticatedUserRecords(t *testing.T) {
 	if payload.Data.Items[0].ID != 20 || payload.Data.Items[0].PointID != "point-001" {
 		t.Fatalf("unexpected first record: %+v", payload.Data.Items[0])
 	}
-	if payload.Data.Items[0].CreatedAt != "2026-09-29 10:30:00" {
-		t.Fatalf("createdAt = %q, want %q", payload.Data.Items[0].CreatedAt, "2026-09-29 10:30:00")
+	if payload.Data.Items[0].CreatedAt != "2026-09-29 18:30:00" {
+		t.Fatalf("createdAt = %q, want %q", payload.Data.Items[0].CreatedAt, "2026-09-29 18:30:00")
 	}
-	if strings.Contains(response.Body.String(), "T10:30:00Z") || strings.Contains(response.Body.String(), "createdAt\":\"2026-09-29T") {
+	if strings.Contains(response.Body.String(), "T18:30:00Z") || strings.Contains(response.Body.String(), "createdAt\":\"2026-09-29T") {
 		t.Fatalf("createdAt response still contains ISO-8601 UTC suffix: %s", response.Body.String())
+	}
+}
+
+func TestEnsureMySQLLocation(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{name: "adds query", dsn: "user:password@tcp(db:3306)/checkin_db", want: "user:password@tcp(db:3306)/checkin_db?loc=UTC"},
+		{name: "appends query", dsn: "user:password@tcp(db:3306)/checkin_db?parseTime=true", want: "user:password@tcp(db:3306)/checkin_db?parseTime=true&loc=UTC"},
+		{name: "normalizes explicit location", dsn: "user:password@tcp(db:3306)/checkin_db?parseTime=true&loc=Asia%2FShanghai", want: "user:password@tcp(db:3306)/checkin_db?parseTime=true&loc=UTC"},
+		{name: "handles empty query", dsn: "user:password@tcp(db:3306)/checkin_db?", want: "user:password@tcp(db:3306)/checkin_db?loc=UTC"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ensureMySQLLocation(tt.dsn); got != tt.want {
+				t.Fatalf("ensureMySQLLocation(%q) = %q, want %q", tt.dsn, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -538,6 +559,147 @@ func TestMyCheckinsRejectsUnauthorizedAndInvalidPagination(t *testing.T) {
 			myCheckins(response, req)
 			if response.Code != tt.wantStatus {
 				t.Fatalf("myCheckins() status = %d, want %d; body = %s", response.Code, tt.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestChangePasswordSuccess(t *testing.T) {
+	oldDB, oldSecret := db, jwtSecret
+	t.Cleanup(func() {
+		db = oldDB
+		jwtSecret = oldSecret
+	})
+	jwtSecret = []byte("test-secret-that-is-at-least-32-bytes")
+
+	oldHash, err := hashPassword("old-password")
+	if err != nil {
+		t.Fatalf("hash old password: %v", err)
+	}
+	token, err := genToken(7)
+	if err != nil {
+		t.Fatalf("genToken() error = %v", err)
+	}
+	state := &fakeLoginState{passwordHash: oldHash}
+	db = newFakeDB(t, state)
+
+	body := `{"oldPassword":"old-password","newPassword":"new-password"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/change-password", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+
+	changePassword(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("changePassword() status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if state.execCalls != 1 {
+		t.Fatalf("changePassword() db writes = %d, want 1", state.execCalls)
+	}
+}
+
+func TestChangePasswordRejectsWrongOldPassword(t *testing.T) {
+	oldDB, oldSecret := db, jwtSecret
+	t.Cleanup(func() {
+		db = oldDB
+		jwtSecret = oldSecret
+	})
+	jwtSecret = []byte("test-secret-that-is-at-least-32-bytes")
+
+	oldHash, err := hashPassword("correct-old")
+	if err != nil {
+		t.Fatalf("hash old password: %v", err)
+	}
+	token, err := genToken(7)
+	if err != nil {
+		t.Fatalf("genToken() error = %v", err)
+	}
+	state := &fakeLoginState{passwordHash: oldHash}
+	db = newFakeDB(t, state)
+
+	body := `{"oldPassword":"wrong-old","newPassword":"new-password"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/change-password", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+
+	changePassword(response, req)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("changePassword() status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	}
+	if state.execCalls != 0 {
+		t.Fatalf("wrong old password should not update db, execCalls = %d", state.execCalls)
+	}
+}
+
+func TestChangePasswordRejectsSamePassword(t *testing.T) {
+	oldDB, oldSecret := db, jwtSecret
+	t.Cleanup(func() {
+		db = oldDB
+		jwtSecret = oldSecret
+	})
+	jwtSecret = []byte("test-secret-that-is-at-least-32-bytes")
+
+	oldHash, err := hashPassword("same-password")
+	if err != nil {
+		t.Fatalf("hash old password: %v", err)
+	}
+	token, err := genToken(7)
+	if err != nil {
+		t.Fatalf("genToken() error = %v", err)
+	}
+	state := &fakeLoginState{passwordHash: oldHash}
+	db = newFakeDB(t, state)
+
+	body := `{"oldPassword":"same-password","newPassword":"same-password"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/change-password", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+
+	changePassword(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("changePassword() status = %d, want %d; body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if state.execCalls != 0 {
+		t.Fatalf("same password should not update db, execCalls = %d", state.execCalls)
+	}
+}
+
+func TestChangePasswordRejectsUnauthorizedAndInvalidRequests(t *testing.T) {
+	oldDB, oldSecret := db, jwtSecret
+	t.Cleanup(func() {
+		db = oldDB
+		jwtSecret = oldSecret
+	})
+	jwtSecret = []byte("test-secret-that-is-at-least-32-bytes")
+
+	tests := []struct {
+		name       string
+		method     string
+		body       string
+		withToken  bool
+		wantStatus int
+	}{
+		{name: "missing token", method: http.MethodPost, body: `{"oldPassword":"a","newPassword":"b"}`, wantStatus: http.StatusUnauthorized},
+		{name: "method not allowed", method: http.MethodGet, body: `{}`, withToken: true, wantStatus: http.StatusMethodNotAllowed},
+		{name: "malformed json", method: http.MethodPost, body: `{`, withToken: true, wantStatus: http.StatusBadRequest},
+		{name: "missing newPassword", method: http.MethodPost, body: `{"oldPassword":"a"}`, withToken: true, wantStatus: http.StatusBadRequest},
+		{name: "unknown field", method: http.MethodPost, body: `{"oldPassword":"a","newPassword":"b","extra":true}`, withToken: true, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db = newFakeDB(t, &fakeLoginState{})
+			req := httptest.NewRequest(tt.method, "/api/change-password", strings.NewReader(tt.body))
+			if tt.withToken {
+				token, err := genToken(7)
+				if err != nil {
+					t.Fatalf("genToken() error = %v", err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			response := httptest.NewRecorder()
+			changePassword(response, req)
+			if response.Code != tt.wantStatus {
+				t.Fatalf("changePassword() status = %d, want %d; body = %s", response.Code, tt.wantStatus, response.Body.String())
 			}
 		})
 	}

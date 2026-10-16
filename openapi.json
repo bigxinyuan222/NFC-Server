@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "打卡服务 API",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "checkin-server 接口文档。token 采用 JWT (HS256),有效期 72 小时,需通过环境变量 JWT_SECRET (>=32 字符) 配置密钥。"
   },
   "servers": [
@@ -302,6 +302,82 @@
         }
       }
     },
+    "/api/change-password": {
+      "post": {
+        "summary": "修改密码",
+        "description": "已登录用户验证旧密码后设置新密码。请求体不允许未知字段。",
+        "tags": ["用户"],
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["oldPassword", "newPassword"],
+                "properties": {
+                  "oldPassword": { "type": "string", "minLength": 1, "maxLength": 128, "description": "当前密码" },
+                  "newPassword": { "type": "string", "minLength": 1, "maxLength": 128, "description": "新密码,不能与旧密码相同" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "密码修改成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 0, "msg": "密码修改成功" }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体格式错误 / 新密码为空或超长 / 新旧密码相同",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "badJson": { "value": { "code": 400, "msg": "请求体格式错误或包含未知字段" } },
+                  "samePassword": { "value": { "code": 1, "msg": "新密码不能与旧密码相同" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / 旧密码错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "examples": {
+                  "notLogin": { "value": { "code": 401, "msg": "未登录" } },
+                  "wrongOld": { "value": { "code": 401, "msg": "旧密码错误" } }
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 POST)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "500": {
+            "description": "查询用户 / 哈希 / 更新密码失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "修改密码失败" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/checkin": {
       "post": {
         "summary": "打卡",
@@ -339,7 +415,7 @@
                         "data": {
                           "type": "object",
                           "properties": {
-                            "dingtalkSync": { "type": "string", "description": "钉钉同步状态: disabled/pending/skipped_missing_mapping/skipped_user_lookup_failed/skipped_attendance_normal/skipped_no_schedule/skipped_attendance_check_failed/skipped_attendance_unknown/queue_failed；默认仅有写权限时直接入队，开启 DINGTALK_ATTENDANCE_CHECK_ENABLED 后才检查缺卡" }
+                            "dingtalkSync": { "type": "string", "description": "钉钉同步状态: disabled/pending/skipped_missing_mapping/skipped_user_lookup_failed/queue_failed；pending 表示同一次签到的两条钉钉流水均已入队" }
                           }
                         }
                       }
@@ -457,7 +533,7 @@
                       {
                         "id": 20,
                         "pointId": "point-001",
-                        "createdAt": "2026-09-29 10:30:00"
+                        "createdAt": "2026-09-29 18:30:00"
                       }
                     ],
                     "page": 1,

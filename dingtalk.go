@@ -24,7 +24,6 @@ const (
 	dingTalkUserListURL       = "https://oapi.dingtalk.com/topapi/v2/user/list"
 	dingTalkDepartmentListURL = "https://oapi.dingtalk.com/topapi/v2/department/listsub"
 	dingTalkUserDetailURL     = "https://oapi.dingtalk.com/topapi/v2/user/get"
-	dingTalkAttendanceListURL = "https://oapi.dingtalk.com/topapi/attendance/list"
 	dingTalkMaxHistory        = 180 * 24 * time.Hour
 	dingTalkDefaultDeviceID   = "checkin-server-001"
 	dingTalkDefaultDevice     = "外部系统同步"
@@ -54,8 +53,6 @@ type DingTalkClient struct {
 	userListEndpoint       string
 	departmentListEndpoint string
 	userDetailEndpoint     string
-	attendanceListEndpoint string
-	attendanceCheckEnabled bool
 	rootDeptID             int64
 	deviceName             string
 	deviceID               string
@@ -97,28 +94,6 @@ type dingTalkUserDetailResponse struct {
 		DepartmentIDs []int64 `json:"dept_id_list"`
 	} `json:"result"`
 }
-
-type dingTalkAttendanceRecord struct {
-	UserID          string                     `json:"user_id"`
-	LegacyUserID    string                     `json:"userid"`
-	TimeResult      string                     `json:"time_result"`
-	CamelTimeResult string                     `json:"timeResult"`
-	Records         []dingTalkAttendanceRecord `json:"records"`
-}
-
-type dingTalkAttendanceListResponse struct {
-	ErrCode int             `json:"errcode"`
-	ErrMsg  string          `json:"errmsg"`
-	Result  json.RawMessage `json:"result"`
-}
-
-type DingTalkAttendanceStatus string
-
-const (
-	DingTalkAttendanceMissing    DingTalkAttendanceStatus = "missing"
-	DingTalkAttendanceNormal     DingTalkAttendanceStatus = "normal"
-	DingTalkAttendanceNoSchedule DingTalkAttendanceStatus = "no_schedule"
-)
 
 type dingTalkUserListRequest struct {
 	DeptID   int64  `json:"dept_id"`
@@ -181,7 +156,6 @@ func newDingTalkClientFromEnv() *DingTalkClient {
 			rootDeptID = parsed
 		}
 	}
-	attendanceCheckEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("DINGTALK_ATTENDANCE_CHECK_ENABLED")), "true")
 	httpClient, err := newDingTalkHTTPClient()
 	if err != nil {
 		log.Printf("invalid DINGTALK_PROXY_URL: %v; using direct connection", err)
@@ -198,20 +172,12 @@ func newDingTalkClientFromEnv() *DingTalkClient {
 		userListEndpoint:       envOrDefault("DINGTALK_USER_LIST_URL", dingTalkUserListURL),
 		departmentListEndpoint: envOrDefault("DINGTALK_DEPARTMENT_LIST_URL", dingTalkDepartmentListURL),
 		userDetailEndpoint:     envOrDefault("DINGTALK_USER_DETAIL_URL", dingTalkUserDetailURL),
-		attendanceListEndpoint: envOrDefault("DINGTALK_ATTENDANCE_LIST_URL", dingTalkAttendanceListURL),
-		attendanceCheckEnabled: attendanceCheckEnabled,
 		rootDeptID:             rootDeptID,
 		deviceName:             envOrDefault("DINGTALK_DEVICE_NAME", dingTalkDefaultDevice),
 		deviceID:               envOrDefault("DINGTALK_DEVICE_ID", dingTalkDefaultDeviceID),
 		format:                 format,
 		httpClient:             httpClient,
 	}
-}
-
-// AttendanceStatusCheckEnabled reports whether the optional attendance read
-// call is enabled. The write-only DingTalk permission is the default setup.
-func (c *DingTalkClient) AttendanceStatusCheckEnabled() bool {
-	return c != nil && c.attendanceCheckEnabled
 }
 
 // directDingTalkHTTPClient avoids inheriting an unrelated process-wide proxy
@@ -516,128 +482,6 @@ func (c *DingTalkClient) GetUserDetails(ctx context.Context, userID string) (din
 		Mobile:        strings.TrimSpace(result.Result.Mobile),
 		DepartmentIDs: append([]int64(nil), result.Result.DepartmentIDs...),
 	}, nil
-}
-
-type dingTalkAttendanceRequest struct {
-	WorkDateFrom string   `json:"workDateFrom"`
-	WorkDateTo   string   `json:"workDateTo"`
-	UserIDList   []string `json:"userIdList"`
-	Offset       int      `json:"offset"`
-	Limit        int      `json:"limit"`
-	IsI18N       bool     `json:"isI18n"`
-}
-
-// CheckAttendanceStatus queries DingTalk's calculated attendance result for
-// one employee and one local calendar day. It intentionally treats an empty
-// result as no schedule, because rest days are not returned as missing cards.
-func (c *DingTalkClient) CheckAttendanceStatus(ctx context.Context, userID string, checkTime time.Time) (DingTalkAttendanceStatus, error) {
-	if c == nil {
-		return DingTalkAttendanceNoSchedule, errors.New("dingtalk client is nil")
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return DingTalkAttendanceNoSchedule, errDingTalkUserNotMapped
-	}
-	accessToken, err := c.getAccessToken(ctx)
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, err
-	}
-	endpointURL := c.attendanceListEndpoint
-	if strings.TrimSpace(endpointURL) == "" {
-		endpointURL = dingTalkAttendanceListURL
-	}
-	endpoint, err := url.Parse(endpointURL)
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("parse dingtalk attendance endpoint: %w", err)
-	}
-	query := endpoint.Query()
-	query.Set("access_token", accessToken)
-	endpoint.RawQuery = query.Encode()
-	day := checkTime.Format("2006-01-02")
-	payload, err := json.Marshal(dingTalkAttendanceRequest{
-		WorkDateFrom: day + " 00:00:00",
-		WorkDateTo:   day + " 23:59:59",
-		UserIDList:   []string{userID},
-		Offset:       0,
-		Limit:        50,
-		IsI18N:       false,
-	})
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("encode dingtalk attendance request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(payload)))
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("create dingtalk attendance request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	response, err := httpClient.Do(req)
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("call dingtalk attendance endpoint: %w", err)
-	}
-	defer response.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("read dingtalk attendance response: %w", err)
-	}
-	var result dingTalkAttendanceListResponse
-	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("decode dingtalk attendance response: %w", err)
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || result.ErrCode != 0 {
-		return DingTalkAttendanceNoSchedule, fmt.Errorf("dingtalk attendance query failed (%d): %s", result.ErrCode, result.ErrMsg)
-	}
-	records, err := decodeDingTalkAttendanceRecords(result.Result)
-	if err != nil {
-		return DingTalkAttendanceNoSchedule, err
-	}
-	if len(records) == 0 {
-		return DingTalkAttendanceNoSchedule, nil
-	}
-	for _, record := range records {
-		recordUserID := firstNonEmpty(record.UserID, record.LegacyUserID)
-		if recordUserID != "" && recordUserID != userID {
-			continue
-		}
-		timeResult := strings.ToLower(strings.TrimSpace(firstNonEmpty(record.TimeResult, record.CamelTimeResult)))
-		if timeResult == "absenteeism" || timeResult == "notsigned" {
-			return DingTalkAttendanceMissing, nil
-		}
-	}
-	return DingTalkAttendanceNormal, nil
-}
-
-func decodeDingTalkAttendanceRecords(raw json.RawMessage) ([]dingTalkAttendanceRecord, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-	var direct []dingTalkAttendanceRecord
-	if err := json.Unmarshal(raw, &direct); err == nil {
-		return flattenDingTalkAttendanceRecords(direct), nil
-	}
-	var wrapped struct {
-		RecordResults []dingTalkAttendanceRecord `json:"record_results"`
-		RecordResult  []dingTalkAttendanceRecord `json:"recordresult"`
-		Records       []dingTalkAttendanceRecord `json:"records"`
-	}
-	if err := json.Unmarshal(raw, &wrapped); err != nil {
-		return nil, fmt.Errorf("decode dingtalk attendance records: %w", err)
-	}
-	records := append(wrapped.RecordResults, wrapped.RecordResult...)
-	records = append(records, wrapped.Records...)
-	return flattenDingTalkAttendanceRecords(records), nil
-}
-
-func flattenDingTalkAttendanceRecords(records []dingTalkAttendanceRecord) []dingTalkAttendanceRecord {
-	flat := make([]dingTalkAttendanceRecord, 0, len(records))
-	for _, record := range records {
-		flat = append(flat, record)
-		flat = append(flat, flattenDingTalkAttendanceRecords(record.Records)...)
-	}
-	return flat
 }
 
 type dingTalkDirectoryUser struct {
@@ -1102,35 +946,22 @@ func queueDingTalkUpload(ctx context.Context, checkinID, uid int64, checkTime ti
 			return "", err
 		}
 	}
-	checkAttendance := true
-	if toggle, ok := uploader.(interface{ AttendanceStatusCheckEnabled() bool }); ok {
-		checkAttendance = toggle.AttendanceStatusCheckEnabled()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
 	}
-	if checkAttendance {
-		if checker, ok := uploader.(interface {
-			CheckAttendanceStatus(context.Context, string, time.Time) (DingTalkAttendanceStatus, error)
-		}); ok {
-			status, statusErr := checker.CheckAttendanceStatus(ctx, dingTalkUserID, checkTime)
-			if statusErr != nil {
-				log.Printf("dingtalk attendance check failed for user %d: %v", uid, statusErr)
-				return "skipped_attendance_check_failed", nil
-			}
-			switch status {
-			case DingTalkAttendanceNoSchedule:
-				return "skipped_no_schedule", nil
-			case DingTalkAttendanceNormal:
-				return "skipped_attendance_normal", nil
-			case DingTalkAttendanceMissing:
-				// Continue to enqueue a compensating punch below.
-			default:
-				return "skipped_attendance_unknown", nil
-			}
+	defer tx.Rollback()
+	for sequence := 1; sequence <= 2; sequence++ {
+		uploadTime := checkTime.Add(time.Duration(sequence-1) * time.Second)
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO dingtalk_upload
+				(checkin_id, upload_sequence, dingtalk_userid, user_check_time, status, next_attempt_at)
+			VALUES (?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
+			checkinID, sequence, dingTalkUserID, uploadTime.UnixMilli()); err != nil {
+			return "", err
 		}
 	}
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO dingtalk_upload (checkin_id, dingtalk_userid, user_check_time, status, next_attempt_at)
-		VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP)`, checkinID, dingTalkUserID, checkTime.UnixMilli())
-	if err != nil {
+	if err = tx.Commit(); err != nil {
 		return "", err
 	}
 	return "pending", nil
