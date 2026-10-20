@@ -21,16 +21,17 @@ import (
 var fakeDriverID uint64
 
 type fakeLoginState struct {
-	values       []driver.Value
-	pointValues  []driver.Value
-	checkinCount int64
-	checkinRows  [][]driver.Value
-	checkinErr   error
-	err          error
-	execErr      error
-	execCalls    int
-	insertID     int64
-	passwordHash string
+	values           []driver.Value
+	pointValues      []driver.Value
+	deviceUserValues []driver.Value
+	checkinCount     int64
+	checkinRows      [][]driver.Value
+	checkinErr       error
+	err              error
+	execErr          error
+	execCalls        int
+	insertID         int64
+	passwordHash     string
 }
 
 type fakeLoginDriver struct {
@@ -64,6 +65,17 @@ func (c *fakeLoginConn) QueryContext(_ context.Context, query string, _ []driver
 			return &fakeLoginRows{
 				columns: []string{"COUNT(*)"},
 				records: [][]driver.Value{{c.state.checkinCount}},
+			}, nil
+		}
+		if strings.Contains(query, "device_id") {
+			return &fakeLoginRows{
+				columns: []string{"user_id"},
+				records: func() [][]driver.Value {
+					if len(c.state.deviceUserValues) == 0 {
+						return nil
+					}
+					return [][]driver.Value{c.state.deviceUserValues}
+				}(),
 			}, nil
 		}
 		return &fakeLoginRows{
@@ -284,7 +296,7 @@ func TestRegisterCreatesUserAndToken(t *testing.T) {
 	jwtSecret = []byte("test-secret-that-is-at-least-32-bytes")
 	state := &fakeLoginState{insertID: 11}
 	db = newFakeDB(t, state)
-	req := httptest.NewRequest(http.MethodPost, "/api/register", strings.NewReader(`{"userName":"alice","password":"correct-password","department":"engineering"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/register", strings.NewReader(`{"userName":"alice","password":"correct-password","department":"engineering","mobile":"13800138000"}`))
 	response := httptest.NewRecorder()
 
 	register(response, req)
@@ -326,6 +338,7 @@ func TestRegisterRejectsInvalidRequests(t *testing.T) {
 		{name: "method must be post", method: http.MethodGet, body: `{}`, wantStatus: http.StatusMethodNotAllowed},
 		{name: "malformed json", method: http.MethodPost, body: `{`, wantStatus: http.StatusBadRequest},
 		{name: "missing department", method: http.MethodPost, body: `{"userName":"alice","password":"secret"}`, wantStatus: http.StatusBadRequest},
+		{name: "missing mobile", method: http.MethodPost, body: `{"userName":"alice","password":"secret","department":"engineering"}`, wantStatus: http.StatusBadRequest},
 		{name: "blank department", method: http.MethodPost, body: `{"userName":"alice","password":"secret","department":"   "}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown field", method: http.MethodPost, body: `{"userName":"alice","password":"secret","department":"engineering","extra":true}`, wantStatus: http.StatusBadRequest},
 	}
@@ -366,7 +379,7 @@ func TestRegisterRejectsDuplicateAndDatabaseErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := &fakeLoginState{execErr: tt.execErr}
 			db = newFakeDB(t, state)
-			body := `{"userName":"alice","password":"secret","department":"engineering"}`
+			body := `{"userName":"alice","password":"secret","department":"engineering","mobile":"13800138000"}`
 			response := httptest.NewRecorder()
 			register(response, httptest.NewRequest(http.MethodPost, "/api/register", strings.NewReader(body)))
 			if response.Code != tt.wantStatus {
@@ -412,9 +425,12 @@ func TestCheckinCreatesRecordForKnownPoint(t *testing.T) {
 
 	const pointID = "office"
 	const whitelistUID = "5317C716430001"
+	const deviceID = "device-001"
 	tests := []struct {
 		name       string
 		point      []driver.Value
+		deviceUser []driver.Value
+		body       string
 		wantStatus int
 		wantWrites int
 	}{
@@ -425,16 +441,37 @@ func TestCheckinCreatesRecordForKnownPoint(t *testing.T) {
 			wantWrites: 1,
 		},
 		{
+			name:       "same device same user within one hour is allowed",
+			point:      []driver.Value{true},
+			deviceUser: []driver.Value{int64(7)},
+			wantStatus: http.StatusOK,
+			wantWrites: 1,
+		},
+		{
+			name:       "same device different user within one hour is rejected",
+			point:      []driver.Value{true},
+			deviceUser: []driver.Value{int64(8)},
+			wantStatus: http.StatusConflict,
+		},
+		{
 			name:       "unknown point is rejected",
 			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "missing deviceId is rejected",
+			body:       `{"pointId":"office","uid":"` + whitelistUID + `"}`,
+			wantStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state := &fakeLoginState{pointValues: tt.point}
+			state := &fakeLoginState{pointValues: tt.point, deviceUserValues: tt.deviceUser}
 			db = newFakeDB(t, state)
-			body := `{"pointId":"` + pointID + `","uid":"` + whitelistUID + `"}`
+			body := tt.body
+			if body == "" {
+				body = `{"pointId":"` + pointID + `","uid":"` + whitelistUID + `","deviceId":"` + deviceID + `"}`
+			}
 			req := httptest.NewRequest(http.MethodPost, "/api/checkin", strings.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+token)
 			response := httptest.NewRecorder()

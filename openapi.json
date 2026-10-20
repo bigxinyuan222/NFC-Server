@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "打卡服务 API",
-    "version": "1.6.0",
+    "version": "1.8.0",
     "description": "checkin-server 接口文档。token 采用 JWT (HS256),有效期 72 小时,需通过环境变量 JWT_SECRET (>=32 字符) 配置密钥。"
   },
   "servers": [
@@ -43,12 +43,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["userName", "password", "department"],
+                "required": ["userName", "password", "department", "mobile"],
                 "properties": {
                   "userName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "账号" },
                   "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "密码" },
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
-                  "mobile": { "type": "string", "maxLength": 32, "description": "员工手机号,用于后续自动查询钉钉 userid" },
+                  "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
                   "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
                 }
               }
@@ -219,12 +219,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["userName", "password", "department"],
+                "required": ["userName", "password", "department", "mobile"],
                 "properties": {
                   "userName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "用户名" },
                   "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "明文密码(后端按 PBKDF2-SHA256 60 万轮哈希存储)" },
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
-                  "mobile": { "type": "string", "maxLength": 32, "description": "员工手机号,用于后续自动查询钉钉 userid" },
+                  "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
                   "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
                 }
               }
@@ -390,10 +390,11 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["pointId", "uid"],
+                "required": ["pointId", "uid", "deviceId"],
                 "properties": {
                   "pointId": { "type": "string", "minLength": 1, "maxLength": 64, "description": "签到点 ID" },
-                  "uid": { "type": "string", "minLength": 1, "maxLength": 64, "description": "前端刷卡读到的卡片 UID,需命中后端白名单" }
+                  "uid": { "type": "string", "minLength": 1, "maxLength": 64, "description": "前端刷卡读到的卡片 UID,需命中后端白名单" },
+                  "deviceId": { "type": "string", "minLength": 1, "maxLength": 128, "description": "设备唯一标识;同一设备 1 小时内只允许同一用户打卡" }
                 }
               }
             }
@@ -479,11 +480,14 @@
             }
           },
           "409": {
-            "description": "签到点不可用",
+            "description": "签到点不可用 / 该设备已被其他用户打卡",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiResult" },
-                "example": { "code": 409, "msg": "签到点不可用" }
+                "examples": {
+                  "pointDisabled": { "value": { "code": 409, "msg": "签到点不可用" } },
+                  "deviceUsed": { "value": { "code": 409, "msg": "该设备已经打过一次卡" } }
+                }
               }
             }
           },

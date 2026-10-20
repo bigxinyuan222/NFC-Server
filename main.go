@@ -40,8 +40,9 @@ type accessClaims struct {
 }
 
 type checkinReq struct {
-	PointID string `json:"pointId"`
-	UID     string `json:"uid"`
+	PointID  string `json:"pointId"`
+	UID      string `json:"uid"`
+	DeviceID string `json:"deviceId"`
 }
 
 // checkinCardWhitelist 打卡卡片 UID 白名单(前端刷卡读到的卡号,统一大写)
@@ -176,8 +177,8 @@ func register(w http.ResponseWriter, r *http.Request) {
 	req.Department = strings.TrimSpace(req.Department)
 	req.Mobile = strings.TrimSpace(req.Mobile)
 	req.DingTalkUserID = strings.TrimSpace(req.DingTalkUserID)
-	if req.UserName == "" || req.Password == "" || req.Department == "" || len(req.UserName) > 64 || len(req.Password) > 128 || len(req.Department) > 64 || len(req.Mobile) > 32 || len(req.DingTalkUserID) > 128 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "用户名、密码或部门格式错误"})
+	if req.UserName == "" || req.Password == "" || req.Department == "" || req.Mobile == "" || len(req.UserName) > 64 || len(req.Password) > 128 || len(req.Department) > 64 || len(req.Mobile) > 32 || len(req.DingTalkUserID) > 128 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "用户名、密码、部门或手机号格式错误"})
 		return
 	}
 	hash, err := hashPassword(req.Password)
@@ -307,6 +308,11 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "签到点无效"})
 		return
 	}
+	req.DeviceID = strings.TrimSpace(req.DeviceID)
+	if req.DeviceID == "" || len(req.DeviceID) > 128 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "设备标识无效"})
+		return
+	}
 	var pointStatus bool
 	err := db.QueryRowContext(r.Context(), "SELECT status FROM checkin_point WHERE id=?", req.PointID).
 		Scan(&pointStatus)
@@ -323,9 +329,23 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"code": 409, "msg": "签到点不可用"})
 		return
 	}
+	// 同一设备 1 小时内只允许同一用户打卡;窗口阈值与写入时间用同一 Go 时钟(东八区),不依赖 MySQL 时区
+	windowStart := time.Now().In(checkinLocation).Add(-time.Hour)
+	var deviceUserID int64
+	err = db.QueryRowContext(r.Context(), "SELECT user_id FROM checkin_log WHERE device_id=? AND created_at >= ? ORDER BY created_at DESC LIMIT 1", req.DeviceID, windowStart).
+		Scan(&deviceUserID)
+	if err != nil && err != sql.ErrNoRows {
+		log.Println("query device checkin failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "查询设备打卡记录失败"})
+		return
+	}
+	if err != sql.ErrNoRows && deviceUserID != uid {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": 409, "msg": "该设备已经打过一次卡"})
+		return
+	}
 	checkTime := time.Now().In(checkinLocation)
-	result, err := db.ExecContext(r.Context(), "INSERT INTO checkin_log(user_id, point_id, created_at) VALUES(?,?,?)",
-		uid, req.PointID, checkTime)
+	result, err := db.ExecContext(r.Context(), "INSERT INTO checkin_log(user_id, point_id, device_id, created_at) VALUES(?,?,?,?)",
+		uid, req.PointID, req.DeviceID, checkTime)
 	if err != nil {
 		log.Println("insert failed:", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "打卡失败"})

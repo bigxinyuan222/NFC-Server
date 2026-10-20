@@ -35,9 +35,11 @@ CREATE TABLE checkin_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL COMMENT '用户ID',
     point_id VARCHAR(64) NOT NULL COMMENT '打卡点ID',
+    device_id VARCHAR(128) NOT NULL DEFAULT '' COMMENT '设备唯一标识',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '打卡时间',
     INDEX idx_user_point (user_id, point_id),
     INDEX idx_checkin_log_user_created (user_id, created_at, id),
+    INDEX idx_checkin_log_device_created (device_id, created_at),
     CONSTRAINT fk_checkin_log_user FOREIGN KEY (user_id) REFERENCES user(id),
     CONSTRAINT fk_checkin_log_point FOREIGN KEY (point_id) REFERENCES checkin_point(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='打卡记录';
