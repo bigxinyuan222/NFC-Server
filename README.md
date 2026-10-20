@@ -54,7 +54,7 @@ mysql -u root -p < init.sql
 必需：
 
 ```powershell
-$env:DB_DSN     = "user:password@tcp(127.0.0.1:3306)/checkin_db?parseTime=true&charset=utf8mb4"
+$env:DB_DSN     = "user:password@tcp(127.0.0.1:3306)/checkin_db?parseTime=true&charset=utf8mb4&loc=UTC"
 $env:JWT_SECRET = "<至少 32 个字符的随机串>"
 ```
 
@@ -85,6 +85,21 @@ go build -o checkin-server.exe .
 
 启动脚本会校验 `DB_DSN` / `JWT_SECRET` 与钉钉凭证是否齐全，清理可能残留的系统代理变量，然后后台拉起 `checkin-server.exe`。加 `-Wait` 可在前台运行便于看日志。
 
+### Docker 部署
+
+Linux 测试环境可以使用 Docker Compose，同时启动 MySQL 和后端：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少修改 MYSQL_ROOT_PASSWORD、MYSQL_PASSWORD、JWT_SECRET
+docker compose up -d --build
+docker compose logs -f app
+```
+
+首次创建 `mysql_data` 卷时会自动执行 `init.sql`。访问 `http://服务器IP:8080/openapi.json` 验证服务；停止服务使用 `docker compose down`，保留数据库卷。只有确认要清空测试数据时才执行 `docker compose down -v`。
+
+已有 MySQL 数据库不要直接删除卷或执行 `init.sql`；先把后端连接配置改为现有数据库，并按顺序执行尚未执行的迁移，包括 `migrations/009_allow_two_dingtalk_uploads_per_checkin.sql`。
+
 ## 命令行子命令
 
 ```powershell
@@ -106,6 +121,8 @@ echo "your-password" | .\checkin-server.exe hash-password
 | POST | `/api/checkin` | Bearer JWT | 签到，body：`pointId`、`uid`（刷卡卡号，自动转大写并对白名单） |
 | GET  | `/api/checkins/me` | Bearer JWT | 分页查询本人打卡记录，query：`page`、`pageSize`（≤100） |
 | GET  | `/openapi.json` | 无 | 返回内嵌的 OpenAPI 规范 |
+
+`/api/checkins/me` 返回的 `createdAt` 使用北京时间（UTC+8），格式为 `yyyy-MM-dd HH:mm:ss`，数据库连接统一按 UTC 处理时间存储。
 
 需要鉴权的接口在请求头携带：
 

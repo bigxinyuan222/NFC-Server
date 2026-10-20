@@ -11,10 +11,6 @@ $env:DINGTALK_DEVICE_NAME = "外部系统同步"
 $env:DINGTALK_DEVICE_ID = "manual_sync_001"
 # 用户提供的接口约定为 form；如果企业接口实际要求 JSON，改为 json
 $env:DINGTALK_UPLOAD_FORMAT = "form"
-# 自动补卡查询接口（默认使用钉钉官方地址）；需要考勤读权限
-# $env:DINGTALK_ATTENDANCE_LIST_URL = "https://oapi.dingtalk.com/topapi/attendance/list"
-# 当前应用只有考勤写权限，默认关闭此查询；有读权限后再设为 true
-$env:DINGTALK_ATTENDANCE_CHECK_ENABLED = "false"
 # 默认启动时批量同步通讯录；如需关闭可设为 "false"
 $env:DINGTALK_SYNC_USERS_ON_START = "true"
 # 默认从根部门 1 开始分页读取通讯录
@@ -29,7 +25,7 @@ $env:DINGTALK_ROOT_DEPT_ID = "1"
 
 凭证只通过环境变量注入，不要提交到 Git。若凭证曾经出现在聊天记录、日志或代码中，应先在钉钉管理后台重置 Client Secret，再配置新值。
 
-应用只有“考勤打卡记录写权限”时，签到请求会跳过 `topapi/attendance/list`，直接将本地签到写入钉钉上传队列。若以后开通考勤读权限，将 `DINGTALK_ATTENDANCE_CHECK_ENABLED` 设为 `true`，才会启用缺卡判断：仅当 `time_result` 为 `Absenteeism` 或 `NotSigned` 时上传，正常、无排班/休息日不会重复上传。
+当前签到不调用钉钉考勤结果读取接口。每次前端请求一次签到接口，后端会为同一个本地签到创建两条独立的钉钉流水上传任务，分别进入队列并独立重试。
 
 ## 用户映射
 
@@ -80,14 +76,16 @@ POST https://oapi.dingtalk.com/topapi/v2/user/list
 SOURCE migrations/005_add_dingtalk_user_mapping.sql;
 SOURCE migrations/006_create_dingtalk_upload_queue.sql;
 SOURCE migrations/007_add_user_mobile.sql;
+SOURCE migrations/008_drop_checkin_log_location.sql;
+SOURCE migrations/009_allow_two_dingtalk_uploads_per_checkin.sql;
 ```
 
 ## 同步流程
 
 1. 本地签到成功后写入 `checkin_log`。
-2. 若已配置钉钉且用户已映射，写入 `dingtalk_upload` 队列。
-3. 后台 worker 每 5 秒处理队列，向 `attendance/record/upload` 发送 `userid`、设备信息和毫秒时间戳。
-4. 失败记录按指数退避重试，成功后保存钉钉 `request_id`。
+2. 若已配置钉钉且用户已映射，为同一次签到写入两条 `dingtalk_upload` 队列记录。
+3. 后台 worker 每 5 秒分别处理两条队列记录，向 `attendance/record/upload` 发送 `userid`、设备信息和毫秒时间戳。
+4. 失败记录按指数退避独立重试，成功后保存对应钉钉 `request_id`。
 
 `user_check_time` 使用本地签到发生时的服务器时间，接口只接受最近 180 天内的记录。
 
@@ -113,9 +111,9 @@ $env:LISTEN_ADDR = "0.0.0.0:8080"
 1. 客户端 `POST /api/login` 获取 JWT。
 2. 客户端携带 `Authorization: Bearer <JWT>` 调用 `POST /api/checkin`，提交 `pointId`。
 3. 服务端检查 `pointId` 对应的签到点是否存在且启用。
-4. 签到点有效后写入 `checkin_log`，然后根据本地用户的 `dingtalk_userid` 写入 `dingtalk_upload(status=pending)`。
-5. 后台 worker 每 5 秒上传钉钉考勤流水；成功后将队列更新为 `success` 并保存 `request_id`，失败则按退避策略重试。
+4. 签到点有效后写入 `checkin_log`，然后根据本地用户的 `dingtalk_userid` 写入两条 `dingtalk_upload(status=pending)`，序号为 1、2。
+5. 后台 worker 每 5 秒分别上传两条钉钉考勤流水；成功后将对应队列项更新为 `success` 并保存 `request_id`，失败则按退避策略独立重试。
 
-签到接口返回 `dingtalkSync: pending` 表示已进入钉钉上传队列；写权限模式下不代表执行了考勤读查询。启用读权限后，`skipped_attendance_normal` 表示当天已有正常考勤，`skipped_no_schedule` 表示接口没有返回排班记录，`skipped_attendance_check_failed` 表示状态查询失败且未盲目补卡。验收钉钉同步时应查询 `dingtalk_upload.status`，最终必须为 `success`。
+签到接口返回 `dingtalkSync: pending` 表示两条钉钉流水都已进入上传队列。验收钉钉同步时应查询同一个 `checkin_id` 对应的两条 `dingtalk_upload` 记录，最终两条都必须为 `success`。
 
 董峥宇当前已完成手机号映射，数据库中已保存钉钉 UserID，因此下一次签到会直接进入第 4 步的入队流程。
