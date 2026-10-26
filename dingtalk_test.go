@@ -14,6 +14,24 @@ import (
 	"time"
 )
 
+func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
+	t.Setenv("DINGTALK_CLIENT_ID", "education-client")
+	t.Setenv("DINGTALK_CLIENT_SECRET", "education-secret")
+	t.Setenv("DINGTALK_ACCESS_TOKEN", "")
+	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_ID", "data-client")
+	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET", "data-secret")
+	t.Setenv("DINGTALK_ORG_LEZHIDATA_ACCESS_TOKEN", "")
+	t.Setenv("DINGTALK_PROXY_URL", "")
+
+	clients := newDingTalkClientsFromEnv()
+	if got := clients[eduDingTalkOrg]; got == nil || got.clientID != "education-client" || got.clientSecret != "education-secret" {
+		t.Fatalf("education client = %#v", clients[eduDingTalkOrg])
+	}
+	if got := clients[dataDingTalkOrg]; got == nil || got.clientID != "data-client" || got.clientSecret != "data-secret" {
+		t.Fatalf("data client = %#v", clients[dataDingTalkOrg])
+	}
+}
+
 func TestDingTalkClientGetsAndCachesAccessToken(t *testing.T) {
 	var tokenCalls int32
 	var uploadCalls int32

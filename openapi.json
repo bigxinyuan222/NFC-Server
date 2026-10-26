@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "打卡服务 API",
-    "version": "1.8.0",
+    "version": "1.9.0",
     "description": "checkin-server 接口文档。token 采用 JWT (HS256),有效期 72 小时,需通过环境变量 JWT_SECRET (>=32 字符) 配置密钥。"
   },
   "servers": [
@@ -32,6 +32,33 @@
     }
   },
   "paths": {
+    "/api/dingtalk/login": {
+      "post": {
+        "summary": "钉钉第三方登录",
+        "description": "根据 state 选择钉钉组织凭证。state 只能是 org_lezhiedu（乐知教育）或 org_lezhidata（乐知数字）。",
+        "tags": ["用户"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["authCode", "state"],
+                "properties": {
+                  "authCode": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                  "state": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "登录成功并返回 JWT", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiResult" } } } },
+          "400": { "description": "组织标识或请求体错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiResult" } } } },
+          "401": { "description": "钉钉账号未绑定本地用户", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiResult" } } } }
+        }
+      }
+    },
     "/api/register": {
       "post": {
         "summary": "用户注册",
@@ -49,7 +76,8 @@
                   "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "密码" },
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
                   "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
-                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
+                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" },
+                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
                 }
               }
             }
@@ -225,7 +253,8 @@
                   "password": { "type": "string", "minLength": 1, "maxLength": 128, "description": "明文密码(后端按 PBKDF2-SHA256 60 万轮哈希存储)" },
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
                   "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
-                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" }
+                  "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" },
+                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
                 }
               }
             }
@@ -497,6 +526,65 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiResult" },
                 "example": { "code": 1, "msg": "打卡失败" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dingtalk-userid-prefix": {
+      "get": {
+        "summary": "获取当前用户钉钉 UserID 前缀",
+        "description": "根据 JWT 中的用户 ID 查询本人绑定的 dingtalk_userid 并返回前 6 位，不接受 userId 参数。",
+        "tags": ["用户"],
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": {
+                  "code": 0,
+                  "msg": "查询成功",
+                  "data": { "dingtalkUserIdPrefix": "123456" }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或 token 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 401, "msg": "未登录" }
+              }
+            }
+          },
+          "404": {
+            "description": "用户未绑定钉钉账号",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 404, "msg": "用户未绑定钉钉账号" }
+              }
+            }
+          },
+          "405": {
+            "description": "方法不允许(仅 GET)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 405, "msg": "方法不允许" }
+              }
+            }
+          },
+          "500": {
+            "description": "查询钉钉用户信息失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiResult" },
+                "example": { "code": 1, "msg": "查询钉钉用户信息失败" }
               }
             }
           }

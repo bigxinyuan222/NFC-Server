@@ -23,9 +23,9 @@ import (
 var openapiSpec []byte
 
 var (
-	db               *sql.DB
-	jwtSecret        []byte
-	dingTalkUploader DingTalkUploader
+	db              *sql.DB
+	jwtSecret       []byte
+	dingTalkClients DingTalkClients
 )
 
 const jwtIssuer = "checkin-server"
@@ -74,11 +74,17 @@ type registerReq struct {
 	Department     string `json:"department"`
 	Mobile         string `json:"mobile"`
 	DingTalkUserID string `json:"dingTalkUserId"`
+	DingTalkOrg    string `json:"dingTalkOrg"`
 }
 
 type changePasswordReq struct {
 	OldPassword string `json:"oldPassword"`
 	NewPassword string `json:"newPassword"`
+}
+
+type dingTalkAuthReq struct {
+	AuthCode string `json:"authCode"`
+	State    string `json:"state"`
 }
 
 func genToken(uid int64) (string, error) {
@@ -160,6 +166,123 @@ func login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "登录成功", "data": map[string]any{"token": tk, "userId": id, "userName": name, "department": department}})
 }
 
+func dingTalkLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": 405, "msg": "方法不允许"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req dingTalkAuthReq
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "请求体格式错误或包含未知字段"})
+		return
+	}
+	req.AuthCode = strings.TrimSpace(req.AuthCode)
+	req.State = strings.ToLower(strings.TrimSpace(req.State))
+	if req.AuthCode == "" || len(req.AuthCode) > 1024 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "authCode 格式错误"})
+		return
+	}
+	if req.State != dataDingTalkOrg && req.State != eduDingTalkOrg {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "state 必须是 org_lezhiedu 或 org_lezhidata"})
+		return
+	}
+	client := dingTalkClients.clientFor(req.State)
+	if client == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "未知的钉钉组织"})
+		return
+	}
+	if client.clientID == "" || client.clientSecret == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": 1, "msg": "该钉钉组织未配置登录凭证，请联系管理员"})
+		return
+	}
+	dingUserID, err := client.ResolveUserIDByAuthCode(r.Context(), req.AuthCode)
+	if err != nil {
+		log.Println("dingtalk resolve user failed:", err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"code": 1, "msg": "钉钉登录失败：" + err.Error()})
+		return
+	}
+	var id int64
+	var name, department string
+	var status bool
+	err = db.QueryRowContext(r.Context(), "SELECT id, name, department, status FROM user WHERE dingtalk_org=? AND dingtalk_userid=? AND status=1", req.State, dingUserID).
+		Scan(&id, &name, &department, &status)
+	if err == sql.ErrNoRows {
+		// 未绑定本地用户时，用钉钉身份信息自动注册并登录，初始密码 123456
+		id, name, department, err = autoRegisterDingTalkUser(r.Context(), client, req.State, dingUserID)
+		if err != nil {
+			log.Println("auto register dingtalk user failed:", err)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"code": 1, "msg": "钉钉账号自动注册失败：" + err.Error()})
+			return
+		}
+	} else if err != nil {
+		log.Println("query user by dingtalk id failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "查询失败"})
+		return
+	}
+	tk, err := genToken(id)
+	if err != nil {
+		log.Println("sign token failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "签发token失败"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "登录成功", "data": map[string]any{"token": tk, "userId": id, "userName": name, "department": department}})
+}
+
+// autoRegisterDingTalkUser 在钉钉账号未绑定本地用户时，用钉钉身份信息自动建号并返回用户ID、姓名、部门。
+// 姓名/手机号/部门全部取自钉钉，初始密码为 123456（APP 内支持后续修改）。
+func autoRegisterDingTalkUser(ctx context.Context, client *DingTalkClient, orgKey, dingUserID string) (int64, string, string, error) {
+	if client == nil || db == nil {
+		return 0, "", "", errors.New("钉钉服务未配置")
+	}
+	details, err := client.GetUserDetails(ctx, dingUserID)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("获取钉钉用户详情失败: %w", err)
+	}
+	name := strings.TrimSpace(details.Name)
+	if name == "" {
+		name = dingUserID
+	}
+	mobile := strings.TrimSpace(details.Mobile)
+	department := formatDingTalkDepartment(details.DepartmentIDs)
+
+	// 先按手机号匹配同组织已有用户，命中则补绑 dingtalk_userid 后直接登录，避免重复建号
+	if mobile != "" {
+		var uid int64
+		findErr := db.QueryRowContext(ctx, "SELECT id FROM user WHERE dingtalk_org=? AND mobile=? AND status=1 LIMIT 1", orgKey, mobile).Scan(&uid)
+		if findErr == nil {
+			if _, updateErr := db.ExecContext(ctx, "UPDATE user SET dingtalk_userid=? WHERE id=? AND dingtalk_org=?", dingUserID, uid, orgKey); updateErr != nil {
+				return 0, "", "", fmt.Errorf("绑定钉钉账号失败: %w", updateErr)
+			}
+			var uname, dept string
+			if err := db.QueryRowContext(ctx, "SELECT name, department FROM user WHERE id=?", uid).Scan(&uname, &dept); err != nil {
+				return 0, "", "", fmt.Errorf("读取用户信息失败: %w", err)
+			}
+			return uid, uname, dept, nil
+		}
+		if findErr != sql.ErrNoRows {
+			return 0, "", "", fmt.Errorf("查询用户失败: %w", findErr)
+		}
+	}
+
+	hash, err := hashPassword("123456")
+	if err != nil {
+		return 0, "", "", fmt.Errorf("生成初始密码失败: %w", err)
+	}
+	result, err := db.ExecContext(ctx, "INSERT INTO user(name, department, password_hash, mobile, dingtalk_userid, dingtalk_org, status) VALUES(?,?,?,?,?,?,1)",
+		name, department, hash, nullableString(mobile), dingUserID, orgKey)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("自动注册失败: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil || id <= 0 {
+		return 0, "", "", errors.New("自动注册后无法获取用户ID")
+	}
+	return id, name, department, nil
+}
+
 func register(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": 405, "msg": "方法不允许"})
@@ -177,6 +300,11 @@ func register(w http.ResponseWriter, r *http.Request) {
 	req.Department = strings.TrimSpace(req.Department)
 	req.Mobile = strings.TrimSpace(req.Mobile)
 	req.DingTalkUserID = strings.TrimSpace(req.DingTalkUserID)
+	req.DingTalkOrg = normalizeDingTalkOrg(req.DingTalkOrg)
+	if req.DingTalkOrg != dataDingTalkOrg && req.DingTalkOrg != eduDingTalkOrg {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "钉钉组织参数错误"})
+		return
+	}
 	if req.UserName == "" || req.Password == "" || req.Department == "" || req.Mobile == "" || len(req.UserName) > 64 || len(req.Password) > 128 || len(req.Department) > 64 || len(req.Mobile) > 32 || len(req.DingTalkUserID) > 128 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "用户名、密码、部门或手机号格式错误"})
 		return
@@ -187,7 +315,7 @@ func register(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "注册失败"})
 		return
 	}
-	result, err := db.ExecContext(r.Context(), "INSERT INTO user(name, department, password_hash, mobile, dingtalk_userid, status) VALUES(?,?,?,?,?,1)", req.UserName, req.Department, hash, nullableString(req.Mobile), nullableString(req.DingTalkUserID))
+	result, err := db.ExecContext(r.Context(), "INSERT INTO user(name, department, password_hash, mobile, dingtalk_userid, dingtalk_org, status) VALUES(?,?,?,?,?,?,1)", req.UserName, req.Department, hash, nullableString(req.Mobile), nullableString(req.DingTalkUserID), req.DingTalkOrg)
 	if err != nil {
 		if isDuplicateUserError(err) {
 			writeJSON(w, http.StatusConflict, map[string]any{"code": 409, "msg": "用户名已存在"})
@@ -357,7 +485,7 @@ func checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "打卡失败"})
 		return
 	}
-	dingTalkSync, syncErr := queueDingTalkUpload(r.Context(), checkinID, uid, checkTime, dingTalkUploader)
+	dingTalkSync, syncErr := queueDingTalkUpload(r.Context(), checkinID, uid, checkTime, dingTalkClients)
 	if syncErr != nil {
 		log.Println("queue dingtalk upload failed:", syncErr)
 		dingTalkSync = "queue_failed"
@@ -458,6 +586,47 @@ func myCheckins(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// myDingTalkUserIDPrefix returns the first six characters of the authenticated
+// user's DingTalk userid. The userid is always loaded using the JWT subject.
+func myDingTalkUserIDPrefix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": 405, "msg": "方法不允许"})
+		return
+	}
+	uid, ok := userIDFromReq(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": 401, "msg": "未登录"})
+		return
+	}
+
+	var dingTalkUserID sql.NullString
+	err := db.QueryRowContext(r.Context(), "SELECT dingtalk_userid FROM user WHERE id=? AND status=1", uid).Scan(&dingTalkUserID)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "msg": "用户未绑定钉钉账号"})
+		return
+	}
+	if err != nil {
+		log.Println("query dingtalk userid failed:", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": 1, "msg": "查询钉钉用户信息失败"})
+		return
+	}
+
+	value := strings.TrimSpace(dingTalkUserID.String)
+	if !dingTalkUserID.Valid || value == "" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": 404, "msg": "用户未绑定钉钉账号"})
+		return
+	}
+	prefix := value
+	if runes := []rune(value); len(runes) > 6 {
+		prefix = string(runes[:6])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"msg":  "查询成功",
+		"data": map[string]any{"dingtalkUserIdPrefix": prefix},
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -528,41 +697,46 @@ func main() {
 	if err = db.Ping(); err != nil {
 		log.Fatal("ping db failed:", err)
 	}
-	dingTalkUploader = newDingTalkClientFromEnv()
+	dingTalkClients = newDingTalkClientsFromEnv()
 	if len(os.Args) == 2 && os.Args[1] == "sync-dingtalk-users" {
-		client, ok := dingTalkUploader.(*DingTalkClient)
-		if !ok || client == nil {
+		if len(dingTalkClients) == 0 {
 			log.Fatal("DingTalk credentials are required for sync-dingtalk-users")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		stats, syncErr := importDingTalkUsers(ctx, client)
-		if syncErr != nil {
-			log.Fatal("sync DingTalk users failed:", syncErr)
+		for orgKey, client := range dingTalkClients {
+			stats, syncErr := importDingTalkUsers(ctx, orgKey, client)
+			if syncErr != nil {
+				log.Fatalf("sync DingTalk users for %s failed: %v", orgKey, syncErr)
+			}
+			fmt.Printf("DingTalk users synced for %s: fetched=%d inserted=%d updated=%d skipped=%d\n", orgKey, stats.Fetched, stats.Inserted, stats.Updated, stats.Skipped)
 		}
-		fmt.Printf("DingTalk users synced: fetched=%d inserted=%d updated=%d skipped=%d\n", stats.Fetched, stats.Inserted, stats.Updated, stats.Skipped)
 		return
 	}
-	if dingTalkClient, ok := dingTalkUploader.(*DingTalkClient); ok && strings.EqualFold(envOrDefault("DINGTALK_SYNC_USERS_ON_START", "true"), "true") {
+	if len(dingTalkClients) > 0 && strings.EqualFold(envOrDefault("DINGTALK_SYNC_USERS_ON_START", "true"), "true") {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			updated, syncErr := syncDingTalkUserMappings(ctx, dingTalkClient)
-			if syncErr != nil {
-				log.Println("sync dingtalk user mappings failed:", syncErr)
-				return
-			}
-			if updated > 0 {
-				log.Printf("synced %d dingtalk user mappings", updated)
+			for orgKey, client := range dingTalkClients {
+				updated, syncErr := syncDingTalkUserMappings(ctx, orgKey, client)
+				if syncErr != nil {
+					log.Printf("sync dingtalk user mappings for %s failed: %v", orgKey, syncErr)
+					continue
+				}
+				if updated > 0 {
+					log.Printf("synced %d dingtalk user mappings for %s", updated, orgKey)
+				}
 			}
 		}()
 	}
-	startDingTalkWorker(context.Background(), dingTalkUploader)
+	startDingTalkWorker(context.Background(), dingTalkClients)
 	http.HandleFunc("/api/login", login)
+	http.HandleFunc("/api/dingtalk/login", dingTalkLogin)
 	http.HandleFunc("/api/register", register)
 	http.HandleFunc("/api/change-password", changePassword)
 	http.HandleFunc("/api/checkin", checkin)
 	http.HandleFunc("/api/checkins/me", myCheckins)
+	http.HandleFunc("/api/dingtalk-userid-prefix", myDingTalkUserIDPrefix)
 	http.HandleFunc("/openapi.json", serveSpec)
 	listenAddr := envOrDefault("LISTEN_ADDR", "0.0.0.0:8080")
 	log.Println("checkin server on", listenAddr)

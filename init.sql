@@ -10,11 +10,12 @@ CREATE TABLE user (
     password_hash VARCHAR(255) NOT NULL COMMENT 'PBKDF2密码哈希',
     mobile VARCHAR(32) NULL COMMENT '员工手机号',
     dingtalk_userid VARCHAR(128) NULL COMMENT '钉钉员工UserID',
+    dingtalk_org VARCHAR(32) NOT NULL DEFAULT 'org_lezhiedu' COMMENT '钉钉组织标识',
     status TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1启用, 0禁用',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_name (name),
-    UNIQUE KEY uk_mobile (mobile),
-    UNIQUE KEY uk_dingtalk_userid (dingtalk_userid)
+    UNIQUE KEY uk_org_mobile (dingtalk_org, mobile),
+    UNIQUE KEY uk_org_dingtalk_userid (dingtalk_org, dingtalk_userid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户';
 
 CREATE TABLE checkin_point (
@@ -48,6 +49,7 @@ CREATE TABLE dingtalk_upload (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     checkin_id BIGINT NOT NULL COMMENT '本地签到记录ID',
     upload_sequence TINYINT UNSIGNED NOT NULL COMMENT '同一次本地签到的钉钉流水序号',
+    dingtalk_org VARCHAR(32) NOT NULL DEFAULT 'org_lezhiedu' COMMENT '钉钉组织标识',
     dingtalk_userid VARCHAR(128) NOT NULL COMMENT '钉钉员工UserID',
     user_check_time BIGINT NOT NULL COMMENT '钉钉打卡时间(毫秒)',
     status VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/processing/success',
@@ -59,5 +61,6 @@ CREATE TABLE dingtalk_upload (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_dingtalk_upload_checkin (checkin_id, upload_sequence),
     INDEX idx_dingtalk_upload_pending (status, next_attempt_at),
+    INDEX idx_dingtalk_upload_org_pending (dingtalk_org, status, next_attempt_at),
     CONSTRAINT fk_dingtalk_upload_checkin FOREIGN KEY (checkin_id) REFERENCES checkin_log(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='钉钉签到上传队列';
