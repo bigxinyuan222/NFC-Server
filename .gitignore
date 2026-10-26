@@ -1,6 +1,7 @@
 # Go build cache
 .gocache/
 .gocache-test/
+.gocache-new-endpoint/
 
 # 编译产物
 *.exe

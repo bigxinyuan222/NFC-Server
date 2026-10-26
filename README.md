@@ -66,6 +66,8 @@ $env:JWT_SECRET = "<至少 32 个字符的随机串>"
 | `DINGTALK_CLIENT_ID` | 空 | 钉钉应用 Client ID |
 | `DINGTALK_CLIENT_SECRET` | 空 | 钉钉应用 Client Secret |
 | `DINGTALK_ACCESS_TOKEN` | 空 | 临时静态 Token，配置后优先于 Client ID/Secret |
+| `DINGTALK_ORG_LEZHIDATA_CLIENT_ID` / `DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET` | 空 | 乐知数字 `org_lezhidata` 的独立凭证；原变量对应乐知教育 `org_lezhiedu` |
+| `DINGTALK_DEFAULT_ORG` | `org_lezhiedu` | 注册未传 `dingTalkOrg` 时的组织归属 |
 | `DINGTALK_DEVICE_NAME` / `DINGTALK_DEVICE_ID` | — | 上传考勤时的设备标识 |
 | `DINGTALK_UPLOAD_FORMAT` | `form` | 上传接口编码，企业若要求 JSON 改为 `json` |
 | `DINGTALK_SYNC_USERS_ON_START` | `true` | 启动时是否批量同步通讯录映射 |
@@ -98,7 +100,7 @@ docker compose logs -f app
 
 首次创建 `mysql_data` 卷时会自动执行 `init.sql`。访问 `http://服务器IP:8080/openapi.json` 验证服务；停止服务使用 `docker compose down`，保留数据库卷。只有确认要清空测试数据时才执行 `docker compose down -v`。
 
-已有 MySQL 数据库不要直接删除卷或执行 `init.sql`；先把后端连接配置改为现有数据库，并按顺序执行尚未执行的迁移，包括 `migrations/009_allow_two_dingtalk_uploads_per_checkin.sql`。
+已有 MySQL 数据库不要直接删除卷或执行 `init.sql`；先把后端连接配置改为现有数据库，并按顺序执行尚未执行的迁移，包括 `migrations/009_allow_two_dingtalk_uploads_per_checkin.sql`、`migrations/011_add_checkin_log_device_id.sql` 和 `migrations/012_add_dingtalk_organization.sql`。
 
 ## 命令行子命令
 
@@ -116,10 +118,11 @@ echo "your-password" | .\checkin-server.exe hash-password
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/api/register` | 无 | 注册用户，body：`userName`、`password`、`department`、可选 `mobile`、`dingTalkUserId` |
+| POST | `/api/register` | 无 | 注册用户，body：`userName`、`password`、`department`、`mobile`，可选 `dingTalkUserId`、`dingTalkOrg` |
 | POST | `/api/login` | 无 | 用户名密码登录，返回 JWT 与用户基本信息 |
 | POST | `/api/checkin` | Bearer JWT | 签到，body：`pointId`、`uid`（刷卡卡号，自动转大写并对白名单） |
 | GET  | `/api/checkins/me` | Bearer JWT | 分页查询本人打卡记录，query：`page`、`pageSize`（≤100） |
+| GET  | `/api/dingtalk-userid-prefix` | Bearer JWT | 返回当前登录用户的 `dingtalk_userid` 前 6 位 |
 | GET  | `/openapi.json` | 无 | 返回内嵌的 OpenAPI 规范 |
 
 `/api/checkins/me` 返回的 `createdAt` 使用北京时间（UTC+8），格式为 `yyyy-MM-dd HH:mm:ss`，数据库连接统一按 UTC 处理时间存储。
