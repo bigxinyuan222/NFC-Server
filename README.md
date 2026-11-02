@@ -6,6 +6,8 @@
 
 - 用户注册 / 登录，口令使用 PBKDF2 哈希存储，登录后下发 JWT（HS256，72 小时有效期）。
 - 签到：校验 JWT、刷卡卡号白名单、签到点存在且启用，写入 `checkin_log`。
+- 设备防重：打卡请求必须携带 `deviceId`；同一设备 1 小时内若换用户再次打卡会被拒绝（409），同一用户重复打卡不受影响。时间窗口统一使用服务端时钟（北京时间）计算。
+- 修改密码：登录用户凭旧密码换取新密码，旧密码错误返回 401。
 - 我的签到记录：按 JWT 中的用户 ID 分页查询，不接受前端传入的 `userId`。
 - 钉钉考勤同步：本地签到成功后写入上传队列，后台 worker 每 5 秒轮询，失败按指数退避重试，成功后回写钉钉 `request_id`。
 - 钉钉用户映射：注册时可直接填写 `dingTalkUserId`；未填写时按 `mobile` 调用 `getbymobile` 反查；启动时还会分页拉取通讯录批量补全映射。
@@ -100,7 +102,7 @@ docker compose logs -f app
 
 首次创建 `mysql_data` 卷时会自动执行 `init.sql`。访问 `http://服务器IP:8080/openapi.json` 验证服务；停止服务使用 `docker compose down`，保留数据库卷。只有确认要清空测试数据时才执行 `docker compose down -v`。
 
-已有 MySQL 数据库不要直接删除卷或执行 `init.sql`；先把后端连接配置改为现有数据库，并按顺序执行尚未执行的迁移，包括 `migrations/009_allow_two_dingtalk_uploads_per_checkin.sql`、`migrations/011_add_checkin_log_device_id.sql` 和 `migrations/012_add_dingtalk_organization.sql`。
+已有 MySQL 数据库不要直接删除卷或执行 `init.sql`；先把后端连接配置改为现有数据库，并按顺序执行尚未执行的迁移，包括 `migrations/009_allow_two_dingtalk_uploads_per_checkin.sql`、`migrations/010_init_empty_password_hash.sql`、`migrations/011_add_checkin_log_device_id.sql` 和 `migrations/012_add_dingtalk_organization.sql`。
 
 ## 命令行子命令
 
@@ -118,9 +120,10 @@ echo "your-password" | .\checkin-server.exe hash-password
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/api/register` | 无 | 注册用户，body：`userName`、`password`、`department`、`mobile`，可选 `dingTalkUserId`、`dingTalkOrg` |
+| POST | `/api/register` | 无 | 注册用户，body：`userName`、`password`、`department`、`mobile`（均必填），可选 `dingTalkUserId`、`dingTalkOrg` |
 | POST | `/api/login` | 无 | 用户名密码登录，返回 JWT 与用户基本信息 |
-| POST | `/api/checkin` | Bearer JWT | 签到，body：`pointId`、`uid`（刷卡卡号，自动转大写并对白名单） |
+| POST | `/api/change-password` | Bearer JWT | 修改密码，body：`oldPassword`、`newPassword` |
+| POST | `/api/checkin` | Bearer JWT | 签到，body：`pointId`、`uid`（刷卡卡号，自动转大写并对白名单）、`deviceId`（设备唯一标识）；同设备 1 小时内换用户打卡返回 409 `该设备已经打过一次卡` |
 | GET  | `/api/checkins/me` | Bearer JWT | 分页查询本人打卡记录，query：`page`、`pageSize`（≤100） |
 | GET  | `/api/dingtalk-userid-prefix` | Bearer JWT | 返回当前登录用户的 `dingtalk_userid` 前 6 位 |
 | GET  | `/openapi.json` | 无 | 返回内嵌的 OpenAPI 规范 |
