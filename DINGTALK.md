@@ -35,7 +35,7 @@ $env:DINGTALK_ROOT_DEPT_ID = "1"
 
 凭证只通过环境变量注入，不要提交到 Git。若凭证曾经出现在聊天记录、日志或代码中，应先在钉钉管理后台重置 Client Secret，再配置新值。
 
-当前签到不调用钉钉考勤结果读取接口。每次前端请求一次签到接口，后端会为同一个本地签到创建两条独立的钉钉流水上传任务，分别进入队列并独立重试。
+当前签到不调用钉钉考勤结果读取接口。每次前端请求一次签到接口，后端为同一个本地签到创建两条独立的钉钉流水上传任务：第一条立即可上传，第二条必须等第一条上传成功至少 61 秒后才可上传，并使用签到时间加 61 秒作为其 `user_check_time`；两条任务独立重试。服务重启或首条失败时，第二条仍会等待首条成功后满 61 秒。
 
 ## 用户映射
 
@@ -99,8 +99,8 @@ SOURCE migrations/012_add_dingtalk_organization.sql;
 ## 同步流程
 
 1. 本地签到成功后写入 `checkin_log`。
-2. 若已配置钉钉且用户已映射，为同一次签到写入两条 `dingtalk_upload` 队列记录。
-3. 后台 worker 每 5 秒分别处理两条队列记录，向 `attendance/record/upload` 发送 `userid`、设备信息和毫秒时间戳。
+2. 若已配置钉钉且用户已映射，为同一次签到写入两条 `dingtalk_upload` 队列记录；第二条受首条成功时间约束，最早在首条上传成功后 61 秒处理。
+3. 后台 worker 每 5 秒处理到期且满足前置条件的队列记录，向 `attendance/record/upload` 发送 `userid`、设备信息和毫秒时间戳。
 4. 失败记录按指数退避独立重试，成功后保存对应钉钉 `request_id`。
 
 `user_check_time` 使用本地签到发生时的服务器时间，接口只接受最近 180 天内的记录。
@@ -127,8 +127,8 @@ $env:LISTEN_ADDR = "0.0.0.0:8080"
 1. 客户端 `POST /api/login` 获取 JWT。
 2. 客户端携带 `Authorization: Bearer <JWT>` 调用 `POST /api/checkin`，提交 `pointId`。
 3. 服务端检查 `pointId` 对应的签到点是否存在且启用。
-4. 签到点有效后写入 `checkin_log`，然后根据本地用户的 `dingtalk_userid` 写入两条 `dingtalk_upload(status=pending)`，序号为 1、2。
-5. 后台 worker 每 5 秒分别上传两条钉钉考勤流水；成功后将对应队列项更新为 `success` 并保存 `request_id`，失败则按退避策略独立重试。
+4. 签到点有效后写入一条 `checkin_log`，然后根据本地用户组织和 `dingtalk_userid` 写入两条 `dingtalk_upload(status=pending)`，序号为 1、2。
+5. 后台 worker 处理序号 1；序号 2 只有在序号 1 成功后至少 61 秒才会上传，时间戳为本地签到时间加 61 秒。worker 每 5 秒轮询，实际发送可能晚于到期时间。成功后保存对应 `request_id`，失败则按退避策略独立重试。
 
 签到接口返回 `dingtalkSync: pending` 表示两条钉钉流水都已进入上传队列。验收钉钉同步时应查询同一个 `checkin_id` 对应的两条 `dingtalk_upload` 记录，最终两条都必须为 `success`。
 
