@@ -29,6 +29,7 @@ const (
 	dingTalkUserAccessTokenURL  = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
 	dingTalkUserPersonalInfoURL = "https://api.dingtalk.com/v1.0/contact/users/me"
 	dingTalkMaxHistory          = 180 * 24 * time.Hour
+	dingTalkSecondUploadDelay   = 61 * time.Second
 	dingTalkDefaultDeviceID     = "checkin-server-001"
 	dingTalkDefaultDevice       = "外部系统同步"
 )
@@ -1204,12 +1205,21 @@ func queueDingTalkUpload(ctx context.Context, checkinID, uid int64, checkTime ti
 	}
 	defer tx.Rollback()
 	for sequence := 1; sequence <= 2; sequence++ {
-		uploadTime := checkTime.Add(time.Duration(sequence-1) * time.Second)
-		if _, err = tx.ExecContext(ctx, `
+		uploadTime := dingTalkUploadCheckTime(checkTime, sequence)
+		delay := time.Duration(sequence-1) * dingTalkSecondUploadDelay
+		query := `
 			INSERT INTO dingtalk_upload
 				(checkin_id, upload_sequence, dingtalk_org, dingtalk_userid, user_check_time, status, next_attempt_at)
-			VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
-			checkinID, sequence, orgKey, dingTalkUserID, uploadTime.UnixMilli()); err != nil {
+			VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`
+		args := []any{checkinID, sequence, orgKey, dingTalkUserID, uploadTime.UnixMilli()}
+		if delay > 0 {
+			query = `
+				INSERT INTO dingtalk_upload
+					(checkin_id, upload_sequence, dingtalk_org, dingtalk_userid, user_check_time, status, next_attempt_at)
+				VALUES (?, ?, ?, ?, ?, 'pending', DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? SECOND))`
+			args = append(args, int64(delay/time.Second))
+		}
+		if _, err = tx.ExecContext(ctx, query, args...); err != nil {
 			return "", err
 		}
 	}
@@ -1250,8 +1260,15 @@ func processDingTalkUploads(ctx context.Context, clients DingTalkClients) {
 		SELECT id, dingtalk_org, dingtalk_userid, user_check_time, attempts
 		FROM dingtalk_upload
 		WHERE status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+		  AND (upload_sequence=1 OR EXISTS (
+			SELECT 1 FROM dingtalk_upload first_upload
+			WHERE first_upload.checkin_id=dingtalk_upload.checkin_id
+			  AND first_upload.upload_sequence=1
+			  AND first_upload.status='success'
+			  AND first_upload.uploaded_at <= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ? SECOND)
+		  ))
 		ORDER BY id
-		LIMIT 20`)
+		LIMIT 20`, int64(dingTalkSecondUploadDelay/time.Second))
 	if err != nil {
 		log.Println("query pending dingtalk uploads failed:", err)
 		return
@@ -1273,6 +1290,13 @@ func processDingTalkUploads(ctx context.Context, clients DingTalkClients) {
 	if err := rows.Err(); err != nil {
 		log.Println("iterate pending dingtalk uploads failed:", err)
 	}
+}
+
+func dingTalkUploadCheckTime(checkTime time.Time, sequence int) time.Time {
+	if sequence == 2 {
+		return checkTime.Add(dingTalkSecondUploadDelay)
+	}
+	return checkTime
 }
 
 func processOneDingTalkUpload(ctx context.Context, uploader DingTalkUploader, item pendingDingTalkUpload) {
