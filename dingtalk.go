@@ -29,7 +29,7 @@ const (
 	dingTalkUserAccessTokenURL  = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
 	dingTalkUserPersonalInfoURL = "https://api.dingtalk.com/v1.0/contact/users/me"
 	dingTalkMaxHistory          = 180 * 24 * time.Hour
-	dingTalkSecondUploadDelay   = 61 * time.Second
+	dingTalkSecondUploadDelay   = 10 * time.Minute
 	dingTalkDefaultDeviceID     = "checkin-server-001"
 	dingTalkDefaultDevice       = "外部系统同步"
 )

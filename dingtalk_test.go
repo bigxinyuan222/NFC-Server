@@ -32,13 +32,13 @@ func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
 	}
 }
 
-func TestDingTalkSecondUploadUses61SecondsLaterCheckTime(t *testing.T) {
+func TestDingTalkSecondUploadUses10MinutesLaterCheckTime(t *testing.T) {
 	checkTime := time.Date(2026, 10, 30, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 
 	if got := dingTalkUploadCheckTime(checkTime, 1); !got.Equal(checkTime) {
 		t.Fatalf("first upload time = %s, want %s", got, checkTime)
 	}
-	wantSecond := checkTime.Add(61 * time.Second)
+	wantSecond := checkTime.Add(10 * time.Minute)
 	if got := dingTalkUploadCheckTime(checkTime, 2); !got.Equal(wantSecond) {
 		t.Fatalf("second upload time = %s, want %s", got, wantSecond)
 	}
