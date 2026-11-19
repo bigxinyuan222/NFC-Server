@@ -21,6 +21,10 @@ func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_ID", "data-client")
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET", "data-secret")
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_ACCESS_TOKEN", "")
+	t.Setenv("DINGTALK_ORG_INNOV307_CLIENT_ID", "innov-client")
+	t.Setenv("DINGTALK_ORG_INNOV307_CLIENT_SECRET", "innov-secret")
+	t.Setenv("DINGTALK_ORG_YUANJING_CLIENT_ID", "yuanjing-client")
+	t.Setenv("DINGTALK_ORG_YUANJING_CLIENT_SECRET", "yuanjing-secret")
 	t.Setenv("DINGTALK_PROXY_URL", "")
 
 	clients := newDingTalkClientsFromEnv()
@@ -30,15 +34,21 @@ func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
 	if got := clients[dataDingTalkOrg]; got == nil || got.clientID != "data-client" || got.clientSecret != "data-secret" {
 		t.Fatalf("data client = %#v", clients[dataDingTalkOrg])
 	}
+	if got := clients[innovDingTalkOrg]; got == nil || got.clientID != "innov-client" || got.clientSecret != "innov-secret" {
+		t.Fatalf("innov client = %#v", clients[innovDingTalkOrg])
+	}
+	if got := clients[yuanjingDingTalkOrg]; got == nil || got.clientID != "yuanjing-client" || got.clientSecret != "yuanjing-secret" {
+		t.Fatalf("yuanjing client = %#v", clients[yuanjingDingTalkOrg])
+	}
 }
 
-func TestDingTalkSecondUploadUses61SecondsLaterCheckTime(t *testing.T) {
+func TestDingTalkSecondUploadUses10MinutesLaterCheckTime(t *testing.T) {
 	checkTime := time.Date(2026, 10, 30, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 
 	if got := dingTalkUploadCheckTime(checkTime, 1); !got.Equal(checkTime) {
 		t.Fatalf("first upload time = %s, want %s", got, checkTime)
 	}
-	wantSecond := checkTime.Add(61 * time.Second)
+	wantSecond := checkTime.Add(10 * time.Minute)
 	if got := dingTalkUploadCheckTime(checkTime, 2); !got.Equal(wantSecond) {
 		t.Fatalf("second upload time = %s, want %s", got, wantSecond)
 	}

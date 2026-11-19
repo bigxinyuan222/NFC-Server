@@ -29,7 +29,7 @@ const (
 	dingTalkUserAccessTokenURL  = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
 	dingTalkUserPersonalInfoURL = "https://api.dingtalk.com/v1.0/contact/users/me"
 	dingTalkMaxHistory          = 180 * 24 * time.Hour
-	dingTalkSecondUploadDelay   = 61 * time.Second
+	dingTalkSecondUploadDelay   = 10 * time.Minute
 	dingTalkDefaultDeviceID     = "checkin-server-001"
 	dingTalkDefaultDevice       = "外部系统同步"
 )
@@ -73,8 +73,10 @@ type DingTalkClient struct {
 type DingTalkClients map[string]*DingTalkClient
 
 const (
-	dataDingTalkOrg = "org_lezhidata"
-	eduDingTalkOrg  = "org_lezhiedu"
+	dataDingTalkOrg     = "org_lezhidata"
+	eduDingTalkOrg      = "org_lezhiedu"
+	innovDingTalkOrg    = "org_innov307"
+	yuanjingDingTalkOrg = "org_yuanjing"
 )
 
 func (clients DingTalkClients) clientFor(orgKey string) *DingTalkClient {
@@ -266,6 +268,12 @@ func newDingTalkClientsFromEnv() DingTalkClients {
 	}
 	if client := newDingTalkClientFromEnvWithPrefix("ORG_LEZHIDATA", dataDingTalkOrg); client != nil {
 		clients[dataDingTalkOrg] = client
+	}
+	if client := newDingTalkClientFromEnvWithPrefix("ORG_INNOV307", innovDingTalkOrg); client != nil {
+		clients[innovDingTalkOrg] = client
+	}
+	if client := newDingTalkClientFromEnvWithPrefix("ORG_YUANJING", yuanjingDingTalkOrg); client != nil {
+		clients[yuanjingDingTalkOrg] = client
 	}
 	if len(clients) == 0 {
 		log.Println("DINGTALK_CLIENT_ID/DINGTALK_CLIENT_SECRET are not configured; DingTalk sync disabled")

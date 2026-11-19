@@ -69,6 +69,8 @@ $env:JWT_SECRET = "<至少 32 个字符的随机串>"
 | `DINGTALK_CLIENT_SECRET` | 空 | 钉钉应用 Client Secret |
 | `DINGTALK_ACCESS_TOKEN` | 空 | 临时静态 Token，配置后优先于 Client ID/Secret |
 | `DINGTALK_ORG_LEZHIDATA_CLIENT_ID` / `DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET` | 空 | 乐知数字 `org_lezhidata` 的独立凭证；原变量对应乐知教育 `org_lezhiedu` |
+| `DINGTALK_ORG_INNOV307_CLIENT_ID` / `DINGTALK_ORG_INNOV307_CLIENT_SECRET` | 空 | 307智能创新小组 `org_innov307` 的独立凭证 |
+| `DINGTALK_ORG_YUANJING_CLIENT_ID` / `DINGTALK_ORG_YUANJING_CLIENT_SECRET` | 空 | 源境AI智能体开发创新 `org_yuanjing` 的独立凭证 |
 | `DINGTALK_DEFAULT_ORG` | `org_lezhiedu` | 注册未传 `dingTalkOrg` 时的组织归属 |
 | `DINGTALK_DEVICE_NAME` / `DINGTALK_DEVICE_ID` | — | 上传考勤时的设备标识 |
 | `DINGTALK_UPLOAD_FORMAT` | `form` | 上传接口编码，企业若要求 JSON 改为 `json` |

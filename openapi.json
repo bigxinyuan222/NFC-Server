@@ -35,7 +35,7 @@
     "/api/dingtalk/login": {
       "post": {
         "summary": "钉钉第三方登录",
-        "description": "根据 state 选择钉钉组织凭证。state 只能是 org_lezhiedu（乐知教育）或 org_lezhidata（乐知数字）。",
+        "description": "根据 state 选择钉钉组织凭证。state 只能是 org_lezhiedu（乐知教育）、org_lezhidata（乐知数字）、org_innov307（307智能创新小组）或 org_yuanjing（源境AI智能体开发创新）。",
         "tags": ["用户"],
         "requestBody": {
           "required": true,
@@ -46,7 +46,7 @@
                 "required": ["authCode", "state"],
                 "properties": {
                   "authCode": { "type": "string", "minLength": 1, "maxLength": 1024 },
-                  "state": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"] }
+                  "state": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata", "org_innov307", "org_yuanjing"] }
                 }
               }
             }
@@ -77,7 +77,7 @@
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
                   "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
                   "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" },
-                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
+                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata", "org_innov307", "org_yuanjing"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
                 }
               }
             }
@@ -254,7 +254,7 @@
                   "department": { "type": "string", "minLength": 1, "maxLength": 64, "description": "部门" },
                   "mobile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "员工手机号,必填" },
                   "dingTalkUserId": { "type": "string", "maxLength": 128, "description": "可选的钉钉员工 userid" },
-                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
+                  "dingTalkOrg": { "type": "string", "enum": ["org_lezhiedu", "org_lezhidata", "org_innov307", "org_yuanjing"], "default": "org_lezhiedu", "description": "钉钉组织标识" }
                 }
               }
             }
