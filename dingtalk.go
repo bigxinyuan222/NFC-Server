@@ -73,8 +73,10 @@ type DingTalkClient struct {
 type DingTalkClients map[string]*DingTalkClient
 
 const (
-	dataDingTalkOrg = "org_lezhidata"
-	eduDingTalkOrg  = "org_lezhiedu"
+	dataDingTalkOrg     = "org_lezhidata"
+	eduDingTalkOrg      = "org_lezhiedu"
+	innovDingTalkOrg    = "org_innov307"
+	yuanjingDingTalkOrg = "org_yuanjing"
 )
 
 func (clients DingTalkClients) clientFor(orgKey string) *DingTalkClient {
@@ -266,6 +268,12 @@ func newDingTalkClientsFromEnv() DingTalkClients {
 	}
 	if client := newDingTalkClientFromEnvWithPrefix("ORG_LEZHIDATA", dataDingTalkOrg); client != nil {
 		clients[dataDingTalkOrg] = client
+	}
+	if client := newDingTalkClientFromEnvWithPrefix("ORG_INNOV307", innovDingTalkOrg); client != nil {
+		clients[innovDingTalkOrg] = client
+	}
+	if client := newDingTalkClientFromEnvWithPrefix("ORG_YUANJING", yuanjingDingTalkOrg); client != nil {
+		clients[yuanjingDingTalkOrg] = client
 	}
 	if len(clients) == 0 {
 		log.Println("DINGTALK_CLIENT_ID/DINGTALK_CLIENT_SECRET are not configured; DingTalk sync disabled")

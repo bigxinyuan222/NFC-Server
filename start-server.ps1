@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $localCredentialFile = Join-Path $PSScriptRoot 'dingtalk.local.env'
 if (Test-Path -LiteralPath $localCredentialFile -PathType Leaf) {
     foreach ($line in Get-Content -LiteralPath $localCredentialFile) {
-        if ($line -match '^\s*(DINGTALK_CLIENT_ID|DINGTALK_CLIENT_SECRET|DINGTALK_ORG_LEZHIDATA_CLIENT_ID|DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET|DINGTALK_DEFAULT_ORG)\s*=\s*(.*?)\s*$') {
+        if ($line -match '^\s*(DINGTALK_CLIENT_ID|DINGTALK_CLIENT_SECRET|DINGTALK_ORG_LEZHIDATA_CLIENT_ID|DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET|DINGTALK_ORG_INNOV307_CLIENT_ID|DINGTALK_ORG_INNOV307_CLIENT_SECRET|DINGTALK_ORG_YUANJING_CLIENT_ID|DINGTALK_ORG_YUANJING_CLIENT_SECRET|DINGTALK_DEFAULT_ORG)\s*=\s*(.*?)\s*$') {
             $name = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
             if (-not [string]::IsNullOrWhiteSpace($value) -and [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
@@ -33,7 +33,11 @@ $hasClientPair = (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmen
 $hasDataAccessToken = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_LEZHIDATA_ACCESS_TOKEN'))
 $hasDataClientPair = (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_LEZHIDATA_CLIENT_ID'))) -and
     (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET')))
-if (-not ($hasAccessToken -or $hasClientPair -or $hasDataAccessToken -or $hasDataClientPair)) {
+$hasInnovClientPair = (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_INNOV307_CLIENT_ID'))) -and
+    (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_INNOV307_CLIENT_SECRET')))
+$hasYuanjingClientPair = (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_YUANJING_CLIENT_ID'))) -and
+    (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('DINGTALK_ORG_YUANJING_CLIENT_SECRET')))
+if (-not ($hasAccessToken -or $hasClientPair -or $hasDataAccessToken -or $hasDataClientPair -or $hasInnovClientPair -or $hasYuanjingClientPair)) {
     throw '请配置至少一个钉钉组织的 Client ID/Secret，或配置对应的临时 Access Token。'
 }
 

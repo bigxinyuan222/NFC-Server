@@ -28,9 +28,11 @@ $env:DINGTALK_ROOT_DEPT_ID = "1"
 服务会使用 Client ID 和 Client Secret 请求 `gettoken`，并在有效期内缓存 Access Token。也可以临时直接配置
 `DINGTALK_ACCESS_TOKEN` 作为静态 Token（它会优先于 Client ID/Secret）。没有配置任何一组凭证时，服务仍可本地签到，但响应中的 `dingtalkSync` 会是 `disabled`。
 
-服务同时保留两个组织：原有 `DINGTALK_CLIENT_ID/SECRET` 对应 `org_lezhiedu`（乐知教育），
-`DINGTALK_ORG_LEZHIDATA_CLIENT_ID/SECRET` 对应 `org_lezhidata`（乐知数字）。钉钉第三方登录请求体必须携带
-`state`，值只能是 `org_lezhiedu` 或 `org_lezhidata`；后端会用该组织的 Client ID/Secret 换取用户身份，
+服务同时保留四个组织：原有 `DINGTALK_CLIENT_ID/SECRET` 对应 `org_lezhiedu`（乐知教育），
+`DINGTALK_ORG_LEZHIDATA_CLIENT_ID/SECRET` 对应 `org_lezhidata`（乐知数字），
+`DINGTALK_ORG_INNOV307_CLIENT_ID/SECRET` 对应 `org_innov307`（307智能创新小组），
+`DINGTALK_ORG_YUANJING_CLIENT_ID/SECRET` 对应 `org_yuanjing`（源境AI智能体开发创新）。钉钉第三方登录请求体必须携带
+`state`，值只能是 `org_lezhiedu`、`org_lezhidata`、`org_innov307` 或 `org_yuanjing`；后端会用该组织的 Client ID/Secret 换取用户身份，
 并按相同组织查询本地用户。未知组织不会回退到另一套凭证。
 
 凭证只通过环境变量注入，不要提交到 Git。若凭证曾经出现在聊天记录、日志或代码中，应先在钉钉管理后台重置 Client Secret，再配置新值。
@@ -52,8 +54,8 @@ $env:DINGTALK_ROOT_DEPT_ID = "1"
 }
 ```
 
-钉钉登录请求示例：`{"authCode":"...","state":"org_lezhiedu"}`。新用户属于乐知数字时注册时传
-`"dingTalkOrg":"org_lezhidata"`；不传则使用 `DINGTALK_DEFAULT_ORG`，当前默认为乐知教育。
+钉钉登录请求示例：`{"authCode":"...","state":"org_yuanjing"}`。新用户注册时传入所属组织的
+`dingTalkOrg`；不传则使用 `DINGTALK_DEFAULT_ORG`，当前默认为乐知教育。
 
 如果没有填写 `dingTalkUserId`，但填写了 `mobile`，第一次同步时服务会调用钉钉：
 

@@ -185,8 +185,8 @@ func dingTalkLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "authCode 格式错误"})
 		return
 	}
-	if req.State != dataDingTalkOrg && req.State != eduDingTalkOrg {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "state 必须是 org_lezhiedu 或 org_lezhidata"})
+	if req.State != dataDingTalkOrg && req.State != eduDingTalkOrg && req.State != innovDingTalkOrg && req.State != yuanjingDingTalkOrg {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 400, "msg": "state 必须是 org_lezhiedu、org_lezhidata、org_innov307 或 org_yuanjing"})
 		return
 	}
 	client := dingTalkClients.clientFor(req.State)
@@ -301,7 +301,7 @@ func register(w http.ResponseWriter, r *http.Request) {
 	req.Mobile = strings.TrimSpace(req.Mobile)
 	req.DingTalkUserID = strings.TrimSpace(req.DingTalkUserID)
 	req.DingTalkOrg = normalizeDingTalkOrg(req.DingTalkOrg)
-	if req.DingTalkOrg != dataDingTalkOrg && req.DingTalkOrg != eduDingTalkOrg {
+	if req.DingTalkOrg != dataDingTalkOrg && req.DingTalkOrg != eduDingTalkOrg && req.DingTalkOrg != innovDingTalkOrg && req.DingTalkOrg != yuanjingDingTalkOrg {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": 1, "msg": "钉钉组织参数错误"})
 		return
 	}

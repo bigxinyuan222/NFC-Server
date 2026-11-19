@@ -21,6 +21,10 @@ func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_ID", "data-client")
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_CLIENT_SECRET", "data-secret")
 	t.Setenv("DINGTALK_ORG_LEZHIDATA_ACCESS_TOKEN", "")
+	t.Setenv("DINGTALK_ORG_INNOV307_CLIENT_ID", "innov-client")
+	t.Setenv("DINGTALK_ORG_INNOV307_CLIENT_SECRET", "innov-secret")
+	t.Setenv("DINGTALK_ORG_YUANJING_CLIENT_ID", "yuanjing-client")
+	t.Setenv("DINGTALK_ORG_YUANJING_CLIENT_SECRET", "yuanjing-secret")
 	t.Setenv("DINGTALK_PROXY_URL", "")
 
 	clients := newDingTalkClientsFromEnv()
@@ -29,6 +33,12 @@ func TestDingTalkClientsKeepOrganizationCredentialsSeparate(t *testing.T) {
 	}
 	if got := clients[dataDingTalkOrg]; got == nil || got.clientID != "data-client" || got.clientSecret != "data-secret" {
 		t.Fatalf("data client = %#v", clients[dataDingTalkOrg])
+	}
+	if got := clients[innovDingTalkOrg]; got == nil || got.clientID != "innov-client" || got.clientSecret != "innov-secret" {
+		t.Fatalf("innov client = %#v", clients[innovDingTalkOrg])
+	}
+	if got := clients[yuanjingDingTalkOrg]; got == nil || got.clientID != "yuanjing-client" || got.clientSecret != "yuanjing-secret" {
+		t.Fatalf("yuanjing client = %#v", clients[yuanjingDingTalkOrg])
 	}
 }
 
